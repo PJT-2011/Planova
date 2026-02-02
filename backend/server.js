@@ -1,6 +1,8 @@
 const express = require("express");
 const cors = require("cors");
 const imageRoutes = require("./routes/image.routes");
+const graphRoutes = require("./routes/graph.routes");
+
 
 
 require("./config/firebase");
@@ -10,6 +12,8 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use("/api/image", imageRoutes);
+app.use("/api/graph", graphRoutes);
+
 
 app.get("/", (req, res) => {
   res.send("Planova Backend Running");
