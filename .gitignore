@@ -119,6 +119,7 @@ app.*.symbols
 # Node
 backend/node_modules
 backend/.env
+backend/functions/node_modules
 
 # General
 node_modules
