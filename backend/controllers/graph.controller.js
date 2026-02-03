@@ -1,5 +1,8 @@
 const admin = require("../config/firebase");
 
+/**
+ * OPTIONAL: manual save (can keep)
+ */
 exports.saveGraph = async (req, res) => {
   try {
     const { floorplanId, nodes, edges } = req.body;
@@ -10,10 +13,10 @@ exports.saveGraph = async (req, res) => {
       });
     }
 
-    await admin.firestore()
+    const doc = await admin.firestore()
       .collection("graphs")
-      .doc(floorplanId)
-      .set({
+      .add({
+        floorplanId,
         nodes,
         edges,
         createdAt: new Date()
@@ -23,7 +26,8 @@ exports.saveGraph = async (req, res) => {
       .collection("floorplans")
       .doc(floorplanId)
       .update({
-        processed: true
+        processed: true,
+        graphId: doc.id
       });
 
     res.json({ message: "Graph saved successfully" });
@@ -34,20 +38,30 @@ exports.saveGraph = async (req, res) => {
   }
 };
 
-exports.getGraph = async (req, res) => {
+
+/**
+ * MAIN METHOD (frontend will use this)
+ */
+exports.getGraphByFloorplan = async (req, res) => {
   try {
     const { floorplanId } = req.params;
 
-    const doc = await admin.firestore()
+    const snapshot = await admin.firestore()
       .collection("graphs")
-      .doc(floorplanId)
+      .where("floorplanId", "==", floorplanId)
+      .limit(1)
       .get();
 
-    if (!doc.exists) {
+    if (snapshot.empty) {
       return res.status(404).json({ message: "Graph not found" });
     }
 
-    res.json(doc.data());
+    const doc = snapshot.docs[0];
+
+    res.json({
+      id: doc.id,
+      ...doc.data()
+    });
 
   } catch (error) {
     console.error(error);

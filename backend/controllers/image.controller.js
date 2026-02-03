@@ -1,4 +1,5 @@
 const admin = require("../config/firebase");
+const pythonService = require("../services/python.service");
 
 /**
  * Register uploaded floorplan
@@ -11,6 +12,7 @@ exports.registerUpload = async (req, res) => {
       return res.status(400).json({ message: "imageUrl is required" });
     }
 
+    // 1. Save floorplan
     const doc = await admin.firestore()
       .collection("floorplans")
       .add({
@@ -18,6 +20,30 @@ exports.registerUpload = async (req, res) => {
         processed: false,
         createdAt: new Date()
       });
+
+    // 2. Call Python
+    const result = await pythonService.processFloorplan({
+      floorplanId: doc.id,
+      imageUrl
+    });
+
+    // 3. Save graph if python returned data
+    if (result && result.nodes && result.edges) {
+      await admin.firestore()
+        .collection("graphs")
+        .add({
+          floorplanId: doc.id,
+          nodes: result.nodes,
+          edges: result.edges,
+          createdAt: new Date()
+        });
+
+      // 4. Mark floorplan as processed
+      await admin.firestore()
+        .collection("floorplans")
+        .doc(doc.id)
+        .update({ processed: true });
+    }
 
     return res.status(201).json({
       message: "Floorplan registered",
