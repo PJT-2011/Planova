@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "903176781310",
+    "project_id": "planova-6d4b9",
+    "storage_bucket": "planova-6d4b9.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:903176781310:android:ebcdc706c1d0d62573d4af",
+        "android_client_info": {
+          "package_name": "com.example.planova_mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAgjYQD-sVwX173HWTd34GNoAGkMXERjkM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
