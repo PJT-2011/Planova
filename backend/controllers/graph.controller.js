@@ -3,13 +3,23 @@ const admin = require("../config/firebase");
 /**
  * OPTIONAL: manual save (can keep)
  */
-exports.saveGraph = async (req, res) => {
+exports.saveGraph = async (req, res, next) => {
   try {
     const { floorplanId, nodes, edges } = req.body;
 
     if (!floorplanId || !nodes || !edges) {
       return res.status(400).json({
         message: "floorplanId, nodes, and edges are required"
+      });
+    }
+
+    if (typeof floorplanId !== "string") {
+      return res.status(400).json({ message: "floorplanId must be a string" });
+    }
+
+    if (!Array.isArray(nodes) || !Array.isArray(edges)) {
+      return res.status(400).json({
+        message: "nodes and edges must be arrays"
       });
     }
 
@@ -33,8 +43,7 @@ exports.saveGraph = async (req, res) => {
     res.json({ message: "Graph saved successfully" });
 
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error" });
+    return next(error);
   }
 };
 
@@ -42,9 +51,13 @@ exports.saveGraph = async (req, res) => {
 /**
  * MAIN METHOD (frontend will use this)
  */
-exports.getGraphByFloorplan = async (req, res) => {
+exports.getGraphByFloorplan = async (req, res, next) => {
   try {
     const { floorplanId } = req.params;
+
+    if (!floorplanId || typeof floorplanId !== "string") {
+      return res.status(400).json({ message: "Invalid floorplan id" });
+    }
 
     const snapshot = await admin.firestore()
       .collection("graphs")
@@ -64,7 +77,6 @@ exports.getGraphByFloorplan = async (req, res) => {
     });
 
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error" });
+    return next(error);
   }
 };

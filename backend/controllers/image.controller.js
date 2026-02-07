@@ -1,15 +1,34 @@
 const admin = require("../config/firebase");
 const pythonService = require("../services/python.service");
 
+function isValidHttpUrl(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch (err) {
+    return false;
+  }
+}
+
 /**
  * Register uploaded floorplan
  */
-exports.registerUpload = async (req, res) => {
+exports.registerUpload = async (req, res, next) => {
   try {
     const { imageUrl } = req.body;
 
     if (!imageUrl) {
       return res.status(400).json({ message: "imageUrl is required" });
+    }
+
+    if (!isValidHttpUrl(imageUrl)) {
+      return res.status(400).json({
+        message: "imageUrl must be a valid http or https URL"
+      });
     }
 
     // 1. Save floorplan
@@ -51,8 +70,7 @@ exports.registerUpload = async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: "Server error" });
+    return next(err);
   }
 };
 
@@ -60,9 +78,13 @@ exports.registerUpload = async (req, res) => {
 /**
  * Get processing status of a floorplan
  */
-exports.getStatus = async (req, res) => {
+exports.getStatus = async (req, res, next) => {
   try {
     const { id } = req.params;
+
+    if (!id || typeof id !== "string") {
+      return res.status(400).json({ message: "Invalid floorplan id" });
+    }
 
     const doc = await admin.firestore()
       .collection("floorplans")
@@ -78,7 +100,6 @@ exports.getStatus = async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: "Server error" });
+    return next(err);
   }
 };
