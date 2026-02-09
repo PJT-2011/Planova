@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:planova_mobile/screens/login_screen.dart';
+import 'package:planova_mobile/screens/home_screen.dart';
+import 'package:planova_mobile/services/auth_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -36,16 +39,36 @@ class SplashScreen extends StatefulWidget {
 }
 
 class _SplashScreenState extends State<SplashScreen> {
+  final AuthService _authService = AuthService();
+
   @override
   void initState() {
     super.initState();
+    _checkAuthState();
+  }
 
-    Future.delayed(const Duration(seconds: 3), () {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const LoginScreen()),
-      );
-    });
+  Future<void> _checkAuthState() async {
+    // Wait 2 seconds to show splash
+    await Future.delayed(const Duration(seconds: 2));
+
+    // Check if user is logged in
+    final user = _authService.currentUser;
+
+    if (mounted) {
+      if (user != null) {
+        // User is logged in, go to home
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const HomeScreen()),
+        );
+      } else {
+        // User not logged in, go to login
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const LoginScreen()),
+        );
+      }
+    }
   }
 
   @override
@@ -71,22 +94,13 @@ class _SplashScreenState extends State<SplashScreen> {
               'Indoor Navigation Made Easy',
               style: TextStyle(fontSize: 16, color: Colors.white70),
             ),
+            SizedBox(height: 40),
+            CircularProgressIndicator(
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+            ),
           ],
         ),
       ),
-    );
-  }
-}
-
-// Temp LoginScreen placeholder lang
-class LoginScreen extends StatelessWidget {
-  const LoginScreen({Key? key}) : super(key: key);
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Login')),
-      body: const Center(child: Text('Login Screen - Coming Soon!')),
     );
   }
 }
