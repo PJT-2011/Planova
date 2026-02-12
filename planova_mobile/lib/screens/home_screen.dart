@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:planova_mobile/services/auth_service.dart';
+import 'package:planova_mobile/services/floorplan_service.dart';
+import 'package:planova_mobile/models/floorplan_model.dart';
 import 'package:planova_mobile/screens/login_screen.dart';
+import 'package:planova_mobile/screens/upload_floorplan_screen.dart';
+import 'package:planova_mobile/screens/floorplan_detail_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -11,6 +15,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final AuthService _authService = AuthService();
+  final FloorplanService _floorplanService = FloorplanService();
   Map<String, dynamic>? _userData;
   bool _isLoading = true;
 
@@ -41,6 +46,13 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  void _navigateToUpload() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const UploadFloorplanScreen()),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -52,86 +64,245 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : Padding(
-              padding: const EdgeInsets.all(24.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Welcome message
-                  Text(
-                    'Welcome, ${_userData?['name'] ?? 'User'}!',
-                    style: const TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
+          : RefreshIndicator(
+              onRefresh: _loadUserData,
+              child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Welcome message
+                    Text(
+                      'Welcome, ${_userData?['name'] ?? 'User'}!',
+                      style: const TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    _userData?['email'] ?? '',
-                    style: const TextStyle(fontSize: 14, color: Colors.grey),
-                  ),
-                  const SizedBox(height: 32),
+                    const SizedBox(height: 8),
+                    Text(
+                      _userData?['email'] ?? '',
+                      style: const TextStyle(fontSize: 14, color: Colors.grey),
+                    ),
+                    const SizedBox(height: 32),
 
-                  // Upload floorplan card
-                  Card(
-                    elevation: 4,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: InkWell(
-                      onTap: () {
-                        // TODO: Navigate to upload screen
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Upload screen coming soon!'),
-                          ),
-                        );
-                      },
-                      borderRadius: BorderRadius.circular(16),
-                      child: Container(
-                        padding: const EdgeInsets.all(24),
-                        child: Column(
-                          children: const [
-                            Icon(
-                              Icons.upload_file,
-                              size: 64,
-                              color: Colors.blue,
-                            ),
-                            SizedBox(height: 16),
-                            Text(
-                              'Upload Floorplan',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
+                    // Upload floorplan card
+                    Card(
+                      elevation: 4,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: InkWell(
+                        onTap: _navigateToUpload,
+                        borderRadius: BorderRadius.circular(16),
+                        child: Container(
+                          padding: const EdgeInsets.all(24),
+                          child: Column(
+                            children: const [
+                              Icon(
+                                Icons.upload_file,
+                                size: 64,
+                                color: Colors.blue,
                               ),
-                            ),
-                            SizedBox(height: 8),
-                            Text(
-                              'Tap to upload a building floorplan',
-                              style: TextStyle(color: Colors.grey),
-                            ),
-                          ],
+                              SizedBox(height: 16),
+                              Text(
+                                'Upload Floorplan',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              SizedBox(height: 8),
+                              Text(
+                                'Tap to upload a building floorplan',
+                                style: TextStyle(color: Colors.grey),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 24),
+                    const SizedBox(height: 32),
 
-                  // Your floorplans section
-                  const Text(
-                    'Your Floorplans',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 16),
-                  const Center(
-                    child: Text(
-                      'No floorplans yet. Upload one to get started!',
-                      style: TextStyle(color: Colors.grey),
+                    // Your floorplans section
+                    const Text(
+                      'Your Floorplans',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 16),
+
+                    // Floorplans list
+                    StreamBuilder<List<FloorplanModel>>(
+                      stream: _floorplanService.getUserFloorplans(),
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState ==
+                            ConnectionState.waiting) {
+                          return const Center(
+                            child: CircularProgressIndicator(),
+                          );
+                        }
+
+                        if (snapshot.hasError) {
+                          return Center(
+                            child: Text('Error: ${snapshot.error}'),
+                          );
+                        }
+
+                        final floorplans = snapshot.data ?? [];
+
+                        if (floorplans.isEmpty) {
+                          return const Center(
+                            child: Padding(
+                              padding: EdgeInsets.all(32.0),
+                              child: Text(
+                                'No floorplans yet.\nUpload one to get started!',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(color: Colors.grey),
+                              ),
+                            ),
+                          );
+                        }
+
+                        return ListView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          itemCount: floorplans.length,
+                          itemBuilder: (context, index) {
+                            final floorplan = floorplans[index];
+                            return _buildFloorplanCard(floorplan);
+                          },
+                        );
+                      },
+                    ),
+                  ],
+                ),
               ),
             ),
+    );
+  }
+
+  Widget _buildFloorplanCard(FloorplanModel floorplan) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: InkWell(
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => FloorplanDetailScreen(floorplan: floorplan),
+            ),
+          );
+        },
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Row(
+            children: [
+              // Thumbnail
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.network(
+                  floorplan.imageUrl,
+                  width: 80,
+                  height: 80,
+                  fit: BoxFit.cover,
+                  errorBuilder: (context, error, stackTrace) {
+                    return Container(
+                      width: 80,
+                      height: 80,
+                      color: Colors.grey[300],
+                      child: const Icon(Icons.error),
+                    );
+                  },
+                  loadingBuilder: (context, child, loadingProgress) {
+                    if (loadingProgress == null) return child;
+                    return Container(
+                      width: 80,
+                      height: 80,
+                      color: Colors.grey[200],
+                      child: const Center(
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(width: 16),
+
+              // Details
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      floorplan.buildingName,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Floor ${floorplan.floorNumber}',
+                      style: const TextStyle(color: Colors.grey),
+                    ),
+                    const SizedBox(height: 8),
+                    _buildStatusChip(floorplan.status),
+                  ],
+                ),
+              ),
+
+              // Arrow icon
+              const Icon(Icons.chevron_right, color: Colors.grey),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatusChip(String status) {
+    Color color;
+    String text;
+
+    switch (status) {
+      case 'ready':
+        color = Colors.green;
+        text = 'Ready';
+        break;
+      case 'processing':
+        color = Colors.orange;
+        text = 'Processing';
+        break;
+      case 'failed':
+        color = Colors.red;
+        text = 'Failed';
+        break;
+      default:
+        color = Colors.blue;
+        text = 'Uploaded';
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: color,
+          fontSize: 12,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
     );
   }
 }
