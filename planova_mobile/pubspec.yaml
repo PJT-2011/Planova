@@ -36,6 +36,11 @@ dependencies:
   firebase_auth: ^4.20.0
   cloud_firestore: ^4.14.0
   firebase_storage: ^11.6.0
+
+     # Mock
+
+  path_provider: ^2.1.1
+  path: ^1.8.3
   
   # UI & State Management
   provider: ^6.1.1
@@ -56,6 +61,8 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+
+  vector_math: ^2.1.4
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is

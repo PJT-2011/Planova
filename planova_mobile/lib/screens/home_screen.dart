@@ -1,6 +1,8 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:planova_mobile/services/auth_service.dart';
 import 'package:planova_mobile/services/floorplan_service.dart';
+import 'package:planova_mobile/services/mock_storage_service.dart';
 import 'package:planova_mobile/models/floorplan_model.dart';
 import 'package:planova_mobile/screens/login_screen.dart';
 import 'package:planova_mobile/screens/upload_floorplan_screen.dart';
@@ -84,6 +86,49 @@ class _HomeScreenState extends State<HomeScreen> {
                     Text(
                       _userData?['email'] ?? '',
                       style: const TextStyle(fontSize: 14, color: Colors.grey),
+                    ),
+
+                    // Storage mode indicator
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: _floorplanService.USE_MOCK_STORAGE
+                            ? Colors.orange.withOpacity(0.1)
+                            : Colors.blue.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: _floorplanService.USE_MOCK_STORAGE
+                              ? Colors.orange
+                              : Colors.blue,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _floorplanService.USE_MOCK_STORAGE
+                                ? Icons.phone_android
+                                : Icons.cloud,
+                            color: _floorplanService.USE_MOCK_STORAGE
+                                ? Colors.orange
+                                : Colors.blue,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              _floorplanService.USE_MOCK_STORAGE
+                                  ? 'Demo Mode: Using local storage'
+                                  : 'Production Mode: Using Firebase Storage',
+                              style: TextStyle(
+                                color: _floorplanService.USE_MOCK_STORAGE
+                                    ? Colors.orange[900]
+                                    : Colors.blue[900],
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                     const SizedBox(height: 32),
 
@@ -207,31 +252,7 @@ class _HomeScreenState extends State<HomeScreen> {
               // Thumbnail
               ClipRRect(
                 borderRadius: BorderRadius.circular(8),
-                child: Image.network(
-                  floorplan.imageUrl,
-                  width: 80,
-                  height: 80,
-                  fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) {
-                    return Container(
-                      width: 80,
-                      height: 80,
-                      color: Colors.grey[300],
-                      child: const Icon(Icons.error),
-                    );
-                  },
-                  loadingBuilder: (context, child, loadingProgress) {
-                    if (loadingProgress == null) return child;
-                    return Container(
-                      width: 80,
-                      height: 80,
-                      color: Colors.grey[200],
-                      child: const Center(
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    );
-                  },
-                ),
+                child: _buildThumbnail(floorplan.imageUrl),
               ),
               const SizedBox(width: 16),
 
@@ -253,7 +274,31 @@ class _HomeScreenState extends State<HomeScreen> {
                       style: const TextStyle(color: Colors.grey),
                     ),
                     const SizedBox(height: 8),
-                    _buildStatusChip(floorplan.status),
+                    Row(
+                      children: [
+                        _buildStatusChip(floorplan.status),
+                        const SizedBox(width: 8),
+                        if (MockStorageService.isMockUrl(floorplan.imageUrl))
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.orange.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Text(
+                              'Local',
+                              style: TextStyle(
+                                color: Colors.orange,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
                   ],
                 ),
               ),
@@ -265,6 +310,56 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+
+  Widget _buildThumbnail(String imageUrl) {
+    if (MockStorageService.isMockUrl(imageUrl)) {
+      // Load from local file
+      final mockStorage = MockStorageService();
+      final localFile = mockStorage.getLocalFile(imageUrl);
+
+      return Image.file(
+        localFile,
+        width: 80,
+        height: 80,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) {
+          return Container(
+            width: 80,
+            height: 80,
+            color: Colors.grey[300],
+            child: const Icon(Icons.error),
+          );
+        },
+      );
+    } else {
+      // Load from network
+      return Image.network(
+        imageUrl,
+        width: 80,
+        height: 80,
+        fit: BoxFit.cover,
+        loadingBuilder: (context, child, loadingProgress) {
+          if (loadingProgress == null) return child;
+          return Container(
+            width: 80,
+            height: 80,
+            color: Colors.grey[200],
+            child: const Center(
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          );
+        },
+        errorBuilder: (context, error, stackTrace) {
+          return Container(
+            width: 80,
+            height: 80,
+            color: Colors.grey[300],
+            child: const Icon(Icons.error),
+          );
+        },
+      );
+    }
   }
 
   Widget _buildStatusChip(String status) {

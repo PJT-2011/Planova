@@ -3,13 +3,19 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:planova_mobile/models/floorplan_model.dart';
+import 'package:planova_mobile/services/mock_storage_service.dart';
 
 class FloorplanService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseStorage _storage = FirebaseStorage.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final MockStorageService _mockStorage = MockStorageService();
 
-  // Upload floorplan image and create database entry
+  // ⚙️ TOGGLE THIS FOR DEMO
+  // Set to true: Uses mock storage (local device) - FOR DEMO
+  // Set to false: Uses real Firebase Storage - FOR PRODUCTION
+  final bool USE_MOCK_STORAGE = true; // ← CHANGE THIS WHEN READY
+
   Future<FloorplanModel?> uploadFloorplan({
     required File imageFile,
     required String buildingName,
@@ -23,33 +29,50 @@ class FloorplanService {
       }
 
       print('🔵 Step 1: Generating floorplan ID...');
-      // Generate unique ID
       final floorplanId = _firestore.collection('floorplans').doc().id;
       print('✅ Floorplan ID: $floorplanId');
 
-      print('🔵 Step 2: Uploading image to Firebase Storage...');
-      // Upload image to Firebase Storage
-      final storageRef = _storage.ref().child(
-        'floorplans/${user.uid}/$floorplanId.jpg',
+      print('🔵 Step 2: Uploading image...');
+      print(
+        '🔵 Storage mode: ${USE_MOCK_STORAGE ? "MOCK (Local Device)" : "REAL (Firebase Cloud)"}',
       );
 
-      final uploadTask = storageRef.putFile(
-        imageFile,
-        SettableMetadata(contentType: 'image/jpeg'),
-      );
+      String imageUrl;
 
-      // Monitor upload progress
-      uploadTask.snapshotEvents.listen((snapshot) {
-        double progress = snapshot.bytesTransferred / snapshot.totalBytes;
-        print('Upload progress: ${(progress * 100).toStringAsFixed(1)}%');
-      });
+      if (USE_MOCK_STORAGE) {
+        // ✅ Use mock storage (for demo)
+        imageUrl = await _mockStorage.uploadImage(
+          imageFile: imageFile,
+          userId: user.uid,
+          floorplanId: floorplanId,
+        );
+        print('✅ MOCK: Image saved to device storage');
+      } else {
+        // 🔥 Use real Firebase Storage (when enabled)
+        print('🔵 Uploading to Firebase Storage...');
+        final storageRef = _storage.ref().child(
+          'floorplans/${user.uid}/$floorplanId.jpg',
+        );
 
-      final snapshot = await uploadTask;
-      final imageUrl = await snapshot.ref.getDownloadURL();
-      print('✅ Image uploaded: $imageUrl');
+        final uploadTask = storageRef.putFile(
+          imageFile,
+          SettableMetadata(contentType: 'image/jpeg'),
+        );
+
+        // Monitor upload progress
+        uploadTask.snapshotEvents.listen((snapshot) {
+          double progress = snapshot.bytesTransferred / snapshot.totalBytes;
+          print('📤 Upload progress: ${(progress * 100).toStringAsFixed(1)}%');
+        });
+
+        final snapshot = await uploadTask;
+        imageUrl = await snapshot.ref.getDownloadURL();
+        print('✅ REAL: Image uploaded to Firebase Storage');
+      }
+
+      print('✅ Image URL: $imageUrl');
 
       print('🔵 Step 3: Creating Firestore document...');
-      // Create floorplan document
       final floorplanData = {
         'userId': user.uid,
         'buildingName': buildingName,
@@ -70,7 +93,6 @@ class FloorplanService {
           .set(floorplanData);
       print('✅ Firestore document created');
 
-      // Create and return FloorplanModel
       final floorplan = FloorplanModel(
         floorplanId: floorplanId,
         userId: user.uid,
@@ -82,7 +104,9 @@ class FloorplanService {
         tags: tags,
       );
 
-      print('✅✅✅ UPLOAD SUCCESSFUL!');
+      print(
+        '✅✅✅ UPLOAD SUCCESSFUL! (${USE_MOCK_STORAGE ? "MOCK" : "REAL"} mode)',
+      );
       return floorplan;
     } on FirebaseException catch (e) {
       print('❌ Firebase error: ${e.code} - ${e.message}');
@@ -93,7 +117,7 @@ class FloorplanService {
     }
   }
 
-  // Get user's floorplans
+  // Get user's floorplans (works with both mock and real)
   Stream<List<FloorplanModel>> getUserFloorplans() {
     final user = _auth.currentUser;
     if (user == null) {
@@ -129,20 +153,31 @@ class FloorplanService {
     }
   }
 
-  // Delete floorplan
+  // Delete floorplan (handles both mock and real)
   Future<void> deleteFloorplan(String floorplanId, String imageUrl) async {
     try {
-      // Delete image from storage
-      final ref = _storage.refFromURL(imageUrl);
-      await ref.delete();
+      print('🔵 Deleting floorplan...');
 
-      // Delete document from Firestore
+      // Delete image
+      if (MockStorageService.isMockUrl(imageUrl)) {
+        // Delete from local storage
+        print('🔵 Deleting from mock storage...');
+        await _mockStorage.deleteImage(imageUrl);
+      } else {
+        // Delete from Firebase Storage
+        print('🔵 Deleting from Firebase Storage...');
+        final ref = _storage.refFromURL(imageUrl);
+        await ref.delete();
+      }
+
+      // Delete Firestore document
+      print('🔵 Deleting Firestore document...');
       await _firestore.collection('floorplans').doc(floorplanId).delete();
 
-      print('✅ Floorplan deleted');
+      print('✅ Floorplan deleted successfully');
     } catch (e) {
       print('❌ Error deleting floorplan: $e');
-      throw 'Failed to delete floorplan';
+      throw 'Failed to delete floorplan: $e';
     }
   }
 
@@ -153,6 +188,7 @@ class FloorplanService {
         'status': status,
         'processedAt': FieldValue.serverTimestamp(),
       });
+      print('✅ Floorplan status updated to: $status');
     } catch (e) {
       print('❌ Error updating status: $e');
     }

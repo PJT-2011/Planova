@@ -1,6 +1,9 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:planova_mobile/models/floorplan_model.dart';
 import 'package:planova_mobile/services/floorplan_service.dart';
+import 'package:planova_mobile/services/mock_storage_service.dart';
+import 'package:planova_mobile/screens/navigation_screen.dart';
 
 class FloorplanDetailScreen extends StatefulWidget {
   final FloorplanModel floorplan;
@@ -72,6 +75,69 @@ class _FloorplanDetailScreenState extends State<FloorplanDetailScreen> {
     }
   }
 
+  Widget _buildFloorplanImage() {
+    final imageUrl = widget.floorplan.imageUrl;
+
+    // Check if it's a mock URL
+    if (MockStorageService.isMockUrl(imageUrl)) {
+      print('🔵 Loading from MOCK storage: $imageUrl');
+
+      // Display from local file
+      final mockStorage = MockStorageService();
+      final localFile = mockStorage.getLocalFile(imageUrl);
+
+      return Image.file(
+        localFile,
+        fit: BoxFit.contain,
+        errorBuilder: (context, error, stackTrace) {
+          print('❌ Error loading mock image: $error');
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: const [
+                Icon(Icons.error, size: 64, color: Colors.red),
+                SizedBox(height: 16),
+                Text('Failed to load image from local storage'),
+              ],
+            ),
+          );
+        },
+      );
+    } else {
+      print('🔵 Loading from FIREBASE storage: $imageUrl');
+
+      // Display from network (Firebase Storage)
+      return Image.network(
+        imageUrl,
+        fit: BoxFit.contain,
+        loadingBuilder: (context, child, loadingProgress) {
+          if (loadingProgress == null) return child;
+          return Center(
+            child: CircularProgressIndicator(
+              value: loadingProgress.expectedTotalBytes != null
+                  ? loadingProgress.cumulativeBytesLoaded /
+                        loadingProgress.expectedTotalBytes!
+                  : null,
+            ),
+          );
+        },
+        errorBuilder: (context, error, stackTrace) {
+          print('❌ Error loading network image: $error');
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: const [
+                Icon(Icons.error, size: 64, color: Colors.red),
+                SizedBox(height: 16),
+                Text('Failed to load image from Firebase'),
+              ],
+            ),
+          );
+        },
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -94,35 +160,7 @@ class _FloorplanDetailScreenState extends State<FloorplanDetailScreen> {
                 transformationController: _transformationController,
                 minScale: 0.5,
                 maxScale: 4.0,
-                child: Center(
-                  child: Image.network(
-                    widget.floorplan.imageUrl,
-                    fit: BoxFit.contain,
-                    errorBuilder: (context, error, stackTrace) {
-                      return const Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.error, size: 64, color: Colors.red),
-                            SizedBox(height: 16),
-                            Text('Failed to load image'),
-                          ],
-                        ),
-                      );
-                    },
-                    loadingBuilder: (context, child, loadingProgress) {
-                      if (loadingProgress == null) return child;
-                      return Center(
-                        child: CircularProgressIndicator(
-                          value: loadingProgress.expectedTotalBytes != null
-                              ? loadingProgress.cumulativeBytesLoaded /
-                                    loadingProgress.expectedTotalBytes!
-                              : null,
-                        ),
-                      );
-                    },
-                  ),
-                ),
+                child: Center(child: _buildFloorplanImage()),
               ),
             ),
           ),
@@ -166,6 +204,44 @@ class _FloorplanDetailScreenState extends State<FloorplanDetailScreen> {
                 ),
                 const SizedBox(height: 8),
 
+                // Storage type indicator
+                Row(
+                  children: [
+                    const Text('Storage: '),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color:
+                            MockStorageService.isMockUrl(
+                              widget.floorplan.imageUrl,
+                            )
+                            ? Colors.orange.withOpacity(0.1)
+                            : Colors.blue.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        MockStorageService.isMockUrl(widget.floorplan.imageUrl)
+                            ? 'Local (Demo)'
+                            : 'Firebase Cloud',
+                        style: TextStyle(
+                          color:
+                              MockStorageService.isMockUrl(
+                                widget.floorplan.imageUrl,
+                              )
+                              ? Colors.orange
+                              : Colors.blue,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+
                 // Upload date
                 Text(
                   'Uploaded: ${_formatDate(widget.floorplan.uploadedAt)}',
@@ -173,28 +249,21 @@ class _FloorplanDetailScreenState extends State<FloorplanDetailScreen> {
                 ),
                 const SizedBox(height: 24),
 
-                // Navigate button (disabled if not ready)
+                // Navigate button
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
-                    onPressed: widget.floorplan.status == 'ready'
-                        ? () {
-                            // TODO: Navigate to navigation screen
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Navigation coming soon!'),
-                              ),
-                            );
-                          }
-                        : null,
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) =>
+                              NavigationScreen(floorplan: widget.floorplan),
+                        ),
+                      );
+                    },
                     icon: const Icon(Icons.navigation),
-                    label: Text(
-                      widget.floorplan.status == 'ready'
-                          ? 'Start Navigation'
-                          : widget.floorplan.status == 'processing'
-                          ? 'Processing...'
-                          : 'Not Ready',
-                    ),
+                    label: const Text('Start Navigation'),
                     style: ElevatedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       shape: RoundedRectangleBorder(
