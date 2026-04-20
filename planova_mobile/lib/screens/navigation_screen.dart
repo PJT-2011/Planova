@@ -1,39 +1,74 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:planova_mobile/models/floorplan_model.dart';
+import 'package:planova_mobile/models/grid_model.dart';
+import 'package:planova_mobile/models/route_model.dart';
 import 'package:planova_mobile/services/mock_storage_service.dart';
+import 'package:planova_mobile/services/floorplan_service.dart';
+import 'package:planova_mobile/services/pathfinding_service.dart';
 
 class NavigationScreen extends StatefulWidget {
   final FloorplanModel floorplan;
 
-  const NavigationScreen({
-    Key? key,
-    required this.floorplan,
-  }) : super(key: key);
+  const NavigationScreen({Key? key, required this.floorplan}) : super(key: key);
 
   @override
   State<NavigationScreen> createState() => _NavigationScreenState();
 }
 
 class _NavigationScreenState extends State<NavigationScreen> {
-  Offset? _startPoint;
-  Offset? _endPoint;
-  bool _selectingStart = true;
-  List<String> _directions = [];
-  double? _distance;
-  int? _estimatedTime;
+  final FloorplanService _floorplanService = FloorplanService();
+  final PathfindingService _pathfindingService = PathfindingService();
 
-  // Image size - we'll calculate this
+  GridPoint? _startPoint;
+  GridPoint? _endPoint;
+  bool _selectingStart = true;
+  RouteModel? _route;
+  GridModel? _gridModel;
+  bool _isLoading = true;
+  bool _isCalculating = false;
+
   Size? _imageSize;
   final GlobalKey _imageKey = GlobalKey();
 
   @override
   void initState() {
     super.initState();
-    // Wait for image to load, then get size
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _getImageSize();
-    });
+    _loadGridData();
+  }
+
+  Future<void> _loadGridData() async {
+    try {
+      print('🔵 [NAV] Loading grid data...');
+
+      final data = await _floorplanService.getFloorplanWithGrid(
+        widget.floorplan.floorplanId,
+      );
+
+      if (data != null && data['grid'] != null) {
+        setState(() {
+          _gridModel = data['grid'] as GridModel;
+          _isLoading = false;
+        });
+        print(
+          '✅ [NAV] Grid loaded: ${_gridModel!.width}x${_gridModel!.height}',
+        );
+      } else {
+        setState(() {
+          _isLoading = false;
+        });
+        print('⚠️ [NAV] No grid data found');
+      }
+
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _getImageSize();
+      });
+    } catch (e) {
+      print('❌ [NAV] Error loading grid: $e');
+      setState(() {
+        _isLoading = false;
+      });
+    }
   }
 
   void _getImageSize() {
@@ -43,28 +78,61 @@ class _NavigationScreenState extends State<NavigationScreen> {
       setState(() {
         _imageSize = renderBox.size;
       });
-      print('🔵 Image size: ${_imageSize!.width} x ${_imageSize!.height}');
+      print(
+        '🔵 [NAV] Image size: ${_imageSize!.width} x ${_imageSize!.height}',
+      );
     }
   }
 
   void _handleTapOnImage(TapDownDetails details) {
-    if (_imageSize == null) {
-      print('⚠️ Image size not calculated yet');
-      _getImageSize();
+    if (_gridModel == null || _imageSize == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please wait for floorplan to load'),
+          duration: Duration(seconds: 2),
+        ),
+      );
       return;
     }
 
-    // Get tap position relative to the image
-    final RenderBox box = context.findRenderObject() as RenderBox;
-    final Offset localPosition = details.localPosition;
+    final localPosition = details.localPosition;
 
-    print('🔵 RAW tap position: $localPosition');
+    // Convert pixel position to grid coordinates
+    final cellSize = _gridModel!.cellSize;
+    final gridCol = (localPosition.dx / cellSize).floor();
+    final gridRow = (localPosition.dy / cellSize).floor();
+
+    // Validate grid position
+    if (gridRow < 0 ||
+        gridRow >= _gridModel!.height ||
+        gridCol < 0 ||
+        gridCol >= _gridModel!.width) {
+      print('⚠️ [NAV] Tap outside grid bounds');
+      return;
+    }
+
+    // Check if tapped on wall
+    if (_gridModel!.grid[gridRow][gridCol] == 1) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot select a wall. Please tap on walkable area.'),
+          duration: Duration(seconds: 2),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    final gridPoint = GridPoint(gridRow, gridCol);
+
+    print('🔵 [NAV] Tap at pixel: $localPosition');
+    print('🔵 [NAV] Grid position: $gridPoint');
 
     setState(() {
       if (_selectingStart) {
-        _startPoint = localPosition;
+        _startPoint = gridPoint;
         _selectingStart = false;
-        print('✅ START point set: $_startPoint');
+        _route = null;
 
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -74,8 +142,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
           ),
         );
       } else {
-        _endPoint = localPosition;
-        print('✅ END point set: $_endPoint');
+        _endPoint = gridPoint;
 
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -85,42 +152,64 @@ class _NavigationScreenState extends State<NavigationScreen> {
           ),
         );
 
-        // Calculate demo route
-        _calculateDemoRoute();
+        _calculateRoute();
       }
     });
   }
 
-  void _calculateDemoRoute() {
-    if (_startPoint == null || _endPoint == null) return;
-
-    // Demo route calculation
-    final dx = _endPoint!.dx - _startPoint!.dx;
-    final dy = _endPoint!.dy - _startPoint!.dy;
-    final distance = (dx * dx + dy * dy).abs();
-    final distanceInMeters = (distance / 10).toDouble(); // Rough estimate
+  Future<void> _calculateRoute() async {
+    if (_startPoint == null || _endPoint == null || _gridModel == null) {
+      return;
+    }
 
     setState(() {
-      _distance = distanceInMeters;
-      _estimatedTime = (distanceInMeters / 1.4).round(); // Walking speed ~1.4 m/s
-      _directions = [
-        'Start at your current location',
-        'Head ${_getDirection(dx, dy)}',
-        if (distance > 100) 'Continue straight for ${distanceInMeters.toStringAsFixed(0)} meters',
-        'You have arrived at your destination',
-      ];
+      _isCalculating = true;
     });
 
-    print('✅ Route calculated!');
-    print('📍 Distance: ${_distance!.toStringAsFixed(1)} meters');
-    print('⏱️ Time: $_estimatedTime seconds');
-  }
+    try {
+      print('🔵 [NAV] Calculating route...');
 
-  String _getDirection(double dx, double dy) {
-    if (dx.abs() > dy.abs()) {
-      return dx > 0 ? 'east' : 'west';
-    } else {
-      return dy > 0 ? 'south' : 'north';
+      final route = await _pathfindingService.findPath(
+        gridModel: _gridModel!,
+        start: _startPoint!,
+        end: _endPoint!,
+        cellSize: _gridModel!.cellSize,
+      );
+
+      if (route != null) {
+        setState(() {
+          _route = route;
+          _isCalculating = false;
+        });
+
+        print('✅ [NAV] Route calculated successfully!');
+        print('✅ [NAV] Distance: ${route.distance.toStringAsFixed(1)}m');
+        print('✅ [NAV] Time: ${route.estimatedTime}s');
+      } else {
+        setState(() {
+          _isCalculating = false;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No path found between these points'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      print('❌ [NAV] Route calculation error: $e');
+
+      setState(() {
+        _isCalculating = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error calculating route: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 
@@ -129,9 +218,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
       _startPoint = null;
       _endPoint = null;
       _selectingStart = true;
-      _directions = [];
-      _distance = null;
-      _estimatedTime = null;
+      _route = null;
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
@@ -144,6 +231,34 @@ class _NavigationScreenState extends State<NavigationScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoading) {
+      return Scaffold(
+        appBar: AppBar(title: Text(widget.floorplan.buildingName)),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_gridModel == null) {
+      return Scaffold(
+        appBar: AppBar(title: Text(widget.floorplan.buildingName)),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: const [
+              Icon(Icons.error, size: 64, color: Colors.red),
+              SizedBox(height: 16),
+              Text('Floorplan not processed yet'),
+              SizedBox(height: 8),
+              Text(
+                'Please wait for processing to complete',
+                style: TextStyle(color: Colors.grey),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.floorplan.buildingName),
@@ -178,7 +293,9 @@ class _NavigationScreenState extends State<NavigationScreen> {
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
-                      color: _selectingStart ? Colors.green[900] : Colors.red[900],
+                      color: _selectingStart
+                          ? Colors.green[900]
+                          : Colors.red[900],
                     ),
                   ),
                 ),
@@ -188,50 +305,71 @@ class _NavigationScreenState extends State<NavigationScreen> {
 
           // Interactive map
           Expanded(
-            child: GestureDetector(
-              onTapDown: _handleTapOnImage,
-              child: Container(
-                color: Colors.grey[200],
-                child: Stack(
-                  children: [
-                    // Floorplan image
-                    Center(
-                      child: _buildFloorplanImage(),
+            child: _isCalculating
+                ? const Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        CircularProgressIndicator(),
+                        SizedBox(height: 16),
+                        Text('Calculating route...'),
+                      ],
                     ),
+                  )
+                : GestureDetector(
+                    onTapDown: _handleTapOnImage,
+                    child: Container(
+                      color: Colors.grey[200],
+                      child: Stack(
+                        children: [
+                          // Floorplan image
+                          Center(child: _buildFloorplanImage()),
 
-                    // Start marker
-                    if (_startPoint != null)
-                      Positioned(
-                        left: _startPoint!.dx - 25,
-                        top: _startPoint!.dy - 50,
-                        child: _buildMarker('S', Colors.green),
-                      ),
+                          // Route path
+                          if (_route != null && _gridModel != null)
+                            CustomPaint(
+                              size: Size.infinite,
+                              painter: RoutePainter(
+                                path: _route!.path,
+                                cellSize: _gridModel!.cellSize,
+                              ),
+                            ),
 
-                    // End marker
-                    if (_endPoint != null)
-                      Positioned(
-                        left: _endPoint!.dx - 25,
-                        top: _endPoint!.dy - 50,
-                        child: _buildMarker('E', Colors.red),
-                      ),
+                          // Start marker
+                          if (_startPoint != null && _gridModel != null)
+                            Positioned(
+                              left:
+                                  _startPoint!.col *
+                                      _gridModel!.cellSize.toDouble() -
+                                  25,
+                              top:
+                                  _startPoint!.row *
+                                      _gridModel!.cellSize.toDouble() -
+                                  50,
+                              child: _buildMarker('S', Colors.green),
+                            ),
 
-                    // Route line
-                    if (_startPoint != null && _endPoint != null)
-                      CustomPaint(
-                        size: Size.infinite,
-                        painter: RoutePainter(
-                          start: _startPoint!,
-                          end: _endPoint!,
-                        ),
+                          // End marker
+                          if (_endPoint != null && _gridModel != null)
+                            Positioned(
+                              left:
+                                  _endPoint!.col *
+                                      _gridModel!.cellSize.toDouble() -
+                                  25,
+                              top:
+                                  _endPoint!.row *
+                                      _gridModel!.cellSize.toDouble() -
+                                  50,
+                              child: _buildMarker('E', Colors.red),
+                            ),
+                        ],
                       ),
-                  ],
-                ),
-              ),
-            ),
+                    ),
+                  ),
           ),
 
           // Directions panel
-          if (_directions.isNotEmpty)
+          if (_route != null)
             Container(
               height: 200,
               decoration: BoxDecoration(
@@ -259,21 +397,20 @@ class _NavigationScreenState extends State<NavigationScreen> {
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                        if (_distance != null)
-                          Text(
-                            '${_distance!.toStringAsFixed(0)}m • ${_estimatedTime}s',
-                            style: const TextStyle(
-                              color: Colors.grey,
-                              fontSize: 14,
-                            ),
+                        Text(
+                          '${_route!.distance.toStringAsFixed(0)}m • ${_route!.estimatedTime}s',
+                          style: const TextStyle(
+                            color: Colors.grey,
+                            fontSize: 14,
                           ),
+                        ),
                       ],
                     ),
                   ),
                   Expanded(
                     child: ListView.builder(
                       padding: const EdgeInsets.symmetric(horizontal: 16),
-                      itemCount: _directions.length,
+                      itemCount: _route!.directions.length,
                       itemBuilder: (context, index) {
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 12),
@@ -286,9 +423,9 @@ class _NavigationScreenState extends State<NavigationScreen> {
                                 decoration: BoxDecoration(
                                   color: index == 0
                                       ? Colors.green
-                                      : index == _directions.length - 1
-                                          ? Colors.red
-                                          : Colors.blue,
+                                      : index == _route!.directions.length - 1
+                                      ? Colors.red
+                                      : Colors.blue,
                                   shape: BoxShape.circle,
                                 ),
                                 child: Center(
@@ -305,7 +442,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                               const SizedBox(width: 12),
                               Expanded(
                                 child: Text(
-                                  _directions[index],
+                                  _route!.directions[index],
                                   style: const TextStyle(fontSize: 14),
                                 ),
                               ),
@@ -406,18 +543,9 @@ class _NavigationScreenState extends State<NavigationScreen> {
           height: 0,
           decoration: BoxDecoration(
             border: Border(
-              left: BorderSide(
-                color: Colors.transparent,
-                width: 10,
-              ),
-              right: BorderSide(
-                color: Colors.transparent,
-                width: 10,
-              ),
-              top: BorderSide(
-                color: color,
-                width: 15,
-              ),
+              left: BorderSide(color: Colors.transparent, width: 10),
+              right: BorderSide(color: Colors.transparent, width: 10),
+              top: BorderSide(color: color, width: 15),
             ),
           ),
         ),
@@ -426,63 +554,44 @@ class _NavigationScreenState extends State<NavigationScreen> {
   }
 }
 
-// Custom painter for the route line
+// Custom painter for the route
 class RoutePainter extends CustomPainter {
-  final Offset start;
-  final Offset end;
+  final List<GridPoint> path;
+  final int cellSize;
 
-  RoutePainter({
-    required this.start,
-    required this.end,
-  });
+  RoutePainter({required this.path, required this.cellSize});
 
   @override
   void paint(Canvas canvas, Size size) {
+    if (path.length < 2) return;
+
     final paint = Paint()
       ..color = Colors.blue
       ..strokeWidth = 4
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round;
 
-    // Draw straight line (demo)
-    canvas.drawLine(start, end, paint);
+    // Draw path
+    for (int i = 0; i < path.length - 1; i++) {
+      final p1 = path[i];
+      final p2 = path[i + 1];
 
-    // Draw dashed effect
-    final dashPaint = Paint()
-      ..color = Colors.white
-      ..strokeWidth = 2
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
-
-    const dashWidth = 10;
-    const dashSpace = 5;
-    double distance = 0;
-
-    final dx = end.dx - start.dx;
-    final dy = end.dy - start.dy;
-    final totalDistance = (dx * dx + dy * dy).abs();
-
-    while (distance < totalDistance) {
-      final progress = distance / totalDistance;
-      final x1 = start.dx + dx * progress;
-      final y1 = start.dy + dy * progress;
-
-      final nextProgress = (distance + dashWidth) / totalDistance;
-      final x2 = start.dx + dx * nextProgress;
-      final y2 = start.dy + dy * nextProgress;
-
-      canvas.drawLine(
-        Offset(x1, y1),
-        Offset(x2, y2),
-        dashPaint,
+      final offset1 = Offset(
+        p1.col * cellSize.toDouble() + cellSize / 2,
+        p1.row * cellSize.toDouble() + cellSize / 2,
       );
 
-      distance += dashWidth + dashSpace;
+      final offset2 = Offset(
+        p2.col * cellSize.toDouble() + cellSize / 2,
+        p2.row * cellSize.toDouble() + cellSize / 2,
+      );
+
+      canvas.drawLine(offset1, offset2, paint);
     }
   }
 
   @override
   bool shouldRepaint(RoutePainter oldDelegate) {
-    return oldDelegate.start != start || oldDelegate.end != end;
+    return oldDelegate.path != path || oldDelegate.cellSize != cellSize;
   }
 }

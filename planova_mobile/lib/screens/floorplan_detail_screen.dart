@@ -75,14 +75,30 @@ class _FloorplanDetailScreenState extends State<FloorplanDetailScreen> {
     }
   }
 
+  Future<void> _startNavigation() async {
+    // Check if floorplan is ready
+    if (widget.floorplan.status != 'ready') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please wait for floorplan processing to complete'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => NavigationScreen(floorplan: widget.floorplan),
+      ),
+    );
+  }
+
   Widget _buildFloorplanImage() {
     final imageUrl = widget.floorplan.imageUrl;
 
-    // Check if it's a mock URL
     if (MockStorageService.isMockUrl(imageUrl)) {
-      print('🔵 Loading from MOCK storage: $imageUrl');
-
-      // Display from local file
       final mockStorage = MockStorageService();
       final localFile = mockStorage.getLocalFile(imageUrl);
 
@@ -90,23 +106,19 @@ class _FloorplanDetailScreenState extends State<FloorplanDetailScreen> {
         localFile,
         fit: BoxFit.contain,
         errorBuilder: (context, error, stackTrace) {
-          print('❌ Error loading mock image: $error');
           return Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: const [
                 Icon(Icons.error, size: 64, color: Colors.red),
                 SizedBox(height: 16),
-                Text('Failed to load image from local storage'),
+                Text('Failed to load image'),
               ],
             ),
           );
         },
       );
     } else {
-      print('🔵 Loading from FIREBASE storage: $imageUrl');
-
-      // Display from network (Firebase Storage)
       return Image.network(
         imageUrl,
         fit: BoxFit.contain,
@@ -122,14 +134,13 @@ class _FloorplanDetailScreenState extends State<FloorplanDetailScreen> {
           );
         },
         errorBuilder: (context, error, stackTrace) {
-          print('❌ Error loading network image: $error');
           return Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: const [
                 Icon(Icons.error, size: 64, color: Colors.red),
                 SizedBox(height: 16),
-                Text('Failed to load image from Firebase'),
+                Text('Failed to load image'),
               ],
             ),
           );
@@ -152,7 +163,7 @@ class _FloorplanDetailScreenState extends State<FloorplanDetailScreen> {
       ),
       body: Column(
         children: [
-          // Floorplan image (zoomable)
+          // Floorplan image
           Expanded(
             child: Container(
               color: Colors.grey[200],
@@ -204,7 +215,7 @@ class _FloorplanDetailScreenState extends State<FloorplanDetailScreen> {
                 ),
                 const SizedBox(height: 8),
 
-                // Storage type indicator
+                // Storage type
                 Row(
                   children: [
                     const Text('Storage: '),
@@ -253,17 +264,17 @@ class _FloorplanDetailScreenState extends State<FloorplanDetailScreen> {
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) =>
-                              NavigationScreen(floorplan: widget.floorplan),
-                        ),
-                      );
-                    },
+                    onPressed: widget.floorplan.status == 'ready'
+                        ? _startNavigation
+                        : null,
                     icon: const Icon(Icons.navigation),
-                    label: const Text('Start Navigation'),
+                    label: Text(
+                      widget.floorplan.status == 'ready'
+                          ? 'Start Navigation'
+                          : widget.floorplan.status == 'processing'
+                          ? 'Processing...'
+                          : 'Not Ready',
+                    ),
                     style: ElevatedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       shape: RoundedRectangleBorder(
@@ -283,23 +294,28 @@ class _FloorplanDetailScreenState extends State<FloorplanDetailScreen> {
   Widget _buildStatusChip(String status) {
     Color color;
     String text;
+    IconData icon;
 
     switch (status) {
       case 'ready':
         color = Colors.green;
         text = 'Ready';
+        icon = Icons.check_circle;
         break;
       case 'processing':
         color = Colors.orange;
         text = 'Processing';
+        icon = Icons.hourglass_empty;
         break;
       case 'failed':
         color = Colors.red;
         text = 'Failed';
+        icon = Icons.error;
         break;
       default:
         color = Colors.blue;
         text = 'Uploaded';
+        icon = Icons.cloud_upload;
     }
 
     return Container(
@@ -309,13 +325,20 @@ class _FloorplanDetailScreenState extends State<FloorplanDetailScreen> {
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: color),
       ),
-      child: Text(
-        text,
-        style: TextStyle(
-          color: color,
-          fontSize: 14,
-          fontWeight: FontWeight.bold,
-        ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 4),
+          Text(
+            text,
+            style: TextStyle(
+              color: color,
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
       ),
     );
   }
