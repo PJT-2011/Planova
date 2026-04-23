@@ -13,9 +13,17 @@ class GridModel {
     required this.metadata,
   });
 
+  /// Convert to Firestore-friendly format
+  /// Firestore doesn't support nested arrays, so we flatten it
   Map<String, dynamic> toJson() {
+    // Flatten 2D array to 1D array
+    final flatGrid = <int>[];
+    for (var row in grid) {
+      flatGrid.addAll(row);
+    }
+
     return {
-      'grid': grid,
+      'grid': flatGrid, // Now a simple 1D array
       'width': width,
       'height': height,
       'cellSize': cellSize,
@@ -23,13 +31,26 @@ class GridModel {
     };
   }
 
+  /// Convert from Firestore format back to 2D grid
   factory GridModel.fromJson(Map<String, dynamic> json) {
+    final flatGrid = List<int>.from(json['grid'] as List);
+    final width = json['width'] as int;
+    final height = json['height'] as int;
+
+    // Reconstruct 2D array from flat array
+    final grid = <List<int>>[];
+    for (int row = 0; row < height; row++) {
+      final startIdx = row * width;
+      final endIdx = startIdx + width;
+      grid.add(flatGrid.sublist(startIdx, endIdx));
+    }
+
     return GridModel(
-      grid: (json['grid'] as List).map((row) => List<int>.from(row)).toList(),
-      width: json['width'],
-      height: json['height'],
-      cellSize: json['cellSize'],
-      metadata: GridMetadata.fromJson(json['metadata']),
+      grid: grid,
+      width: width,
+      height: height,
+      cellSize: json['cellSize'] as int,
+      metadata: GridMetadata.fromJson(json['metadata'] as Map<String, dynamic>),
     );
   }
 }
@@ -61,11 +82,11 @@ class GridMetadata {
 
   factory GridMetadata.fromJson(Map<String, dynamic> json) {
     return GridMetadata(
-      imageWidth: json['imageWidth'],
-      imageHeight: json['imageHeight'],
-      processingTime: json['processingTime'],
-      wallCells: json['wallCells'],
-      walkableCells: json['walkableCells'],
+      imageWidth: json['imageWidth'] as int,
+      imageHeight: json['imageHeight'] as int,
+      processingTime: (json['processingTime'] as num).toDouble(),
+      wallCells: json['wallCells'] as int,
+      walkableCells: json['walkableCells'] as int,
     );
   }
 }

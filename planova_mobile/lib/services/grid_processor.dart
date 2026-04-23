@@ -9,8 +9,9 @@ class GridProcessor {
   Future<GridModel> processImage(File imageFile, {int cellSize = 20}) async {
     final startTime = DateTime.now();
 
-    print('🔵 Starting grid processing...');
-    print('🔵 Cell size: $cellSize pixels');
+    print('🔵 [GRID PROCESSOR] Starting grid processing...');
+    print('🔵 [GRID PROCESSOR] Cell size: $cellSize pixels');
+    print('🔵 [GRID PROCESSOR] File path: ${imageFile.path}');
 
     // Read image bytes
     final bytes = await imageFile.readAsBytes();
