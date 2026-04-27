@@ -1,6 +1,5 @@
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' as path;
 
 /// Mock Firebase Storage Service
 /// Saves images to local device storage instead of Firebase
@@ -9,72 +8,84 @@ class MockStorageService {
   /// Upload image to local device storage
   /// Returns a mock URL in format: mock://path/to/file
   Future<String> uploadImage({
-    required File imageFile,
     required String userId,
     required String floorplanId,
+    required File imageFile,
+    required Function(double) onProgress,
   }) async {
-    try {
-      print('🔵 MOCK STORAGE: Starting upload...');
-      print('🔵 User ID: $userId');
-      print('🔵 Floorplan ID: $floorplanId');
-      print('🔵 Source file: ${imageFile.path}');
+    print('🔵 MOCK STORAGE: Starting upload...');
+    print('🔵 User ID: $userId');
+    print('🔵 Floorplan ID: $floorplanId');
+    print('🔵 Source file: ${imageFile.path}');
 
-      // Simulate network delay (like real upload)
-      await Future.delayed(const Duration(milliseconds: 1500));
+    // Create directory structure
+    final appDir = await getApplicationDocumentsDirectory();
+    final userDir = Directory('${appDir.path}/floorplans/$userId');
 
-      // Progress simulation
-      print('📤 MOCK Progress: 25%');
-      await Future.delayed(const Duration(milliseconds: 300));
-      print('📤 MOCK Progress: 50%');
-      await Future.delayed(const Duration(milliseconds: 300));
-      print('📤 MOCK Progress: 75%');
-      await Future.delayed(const Duration(milliseconds: 300));
-      print('📤 MOCK Progress: 100%');
-
-      // Get app's local directory
-      final directory = await getApplicationDocumentsDirectory();
-
-      // Create floorplans folder structure: /floorplans/{userId}/{floorplanId}.jpg
-      final localPath = path.join(
-        directory.path,
-        'floorplans',
-        userId,
-        '$floorplanId.jpg',
-      );
-
-      print('🔵 Saving to: $localPath');
-
-      // Create directory if it doesn't exist
-      final dir = Directory(path.dirname(localPath));
-      if (!await dir.exists()) {
-        await dir.create(recursive: true);
-        print('🔵 Created directory structure');
-      }
-
-      // Copy image to local storage
-      final savedFile = await imageFile.copy(localPath);
-      final fileSize = await savedFile.length();
-      print('✅ MOCK STORAGE: Image saved locally');
-      print('✅ File size: ${(fileSize / 1024).toStringAsFixed(2)} KB');
-
-      // Return a mock URL (actually a local path)
-      // Prefix with 'mock://' so we know it's local
-      final mockUrl = 'mock://$localPath';
-      print('✅ MOCK URL: $mockUrl');
-
-      return mockUrl;
-    } catch (e, stackTrace) {
-      print('❌ MOCK STORAGE: Upload error: $e');
-      print('❌ Stack trace: $stackTrace');
-      throw 'Mock upload failed: $e';
+    if (!await userDir.exists()) {
+      await userDir.create(recursive: true);
+      print('📁 Created directory: ${userDir.path}');
     }
+
+    // Destination file path
+    final destinationPath = '${userDir.path}/$floorplanId.jpg';
+    print('🔵 Saving to: $destinationPath');
+
+    // Simulate upload progress
+    onProgress(0.25);
+    await Future.delayed(const Duration(milliseconds: 100));
+    print('📤 MOCK Progress: 25%');
+
+    onProgress(0.5);
+    await Future.delayed(const Duration(milliseconds: 100));
+    print('📤 MOCK Progress: 50%');
+
+    onProgress(0.75);
+    await Future.delayed(const Duration(milliseconds: 100));
+    print('📤 MOCK Progress: 75%');
+
+    // Actually copy the file
+    final destinationFile = await imageFile.copy(destinationPath);
+
+    // Verify file was saved
+    if (!await destinationFile.exists()) {
+      throw Exception('Failed to save file to: $destinationPath');
+    }
+
+    final fileSize = await destinationFile.length();
+    print('✅ MOCK STORAGE: Image saved locally');
+    print('✅ File size: ${(fileSize / 1024).toStringAsFixed(2)} KB');
+    print('✅ File path: ${destinationFile.path}');
+
+    onProgress(1.0);
+    print('📤 MOCK Progress: 100%');
+
+    // Return mock URL
+    final mockUrl = 'mock://$destinationPath';
+    print('✅ MOCK URL: $mockUrl');
+
+    return mockUrl;
   }
 
   /// Get local file from mock URL
   File getLocalFile(String mockUrl) {
-    // Remove 'mock://' prefix to get actual path
+    if (!isMockUrl(mockUrl)) {
+      throw ArgumentError('Not a mock URL: $mockUrl');
+    }
+
+    // Extract path from mock URL
     final localPath = mockUrl.replaceFirst('mock://', '');
-    return File(localPath);
+    print('🔵 [MOCK] Getting file from path: $localPath');
+
+    final file = File(localPath);
+
+    if (!file.existsSync()) {
+      print('❌ [MOCK] File does not exist: $localPath');
+    } else {
+      print('✅ [MOCK] File exists: $localPath');
+    }
+
+    return file;
   }
 
   /// Delete local file
@@ -103,7 +114,7 @@ class MockStorageService {
   Future<List<String>> getAllMockImages() async {
     try {
       final directory = await getApplicationDocumentsDirectory();
-      final floorplansDir = Directory(path.join(directory.path, 'floorplans'));
+      final floorplansDir = Directory('${directory.path}/floorplans');
 
       if (!await floorplansDir.exists()) {
         return [];
@@ -127,7 +138,7 @@ class MockStorageService {
   Future<void> clearAllMockStorage() async {
     try {
       final directory = await getApplicationDocumentsDirectory();
-      final floorplansDir = Directory(path.join(directory.path, 'floorplans'));
+      final floorplansDir = Directory('${directory.path}/floorplans');
 
       if (await floorplansDir.exists()) {
         await floorplansDir.delete(recursive: true);

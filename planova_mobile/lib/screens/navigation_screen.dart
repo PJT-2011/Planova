@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:planova_mobile/models/floorplan_model.dart';
@@ -9,7 +10,6 @@ import 'package:planova_mobile/services/mock_storage_service.dart';
 import 'package:planova_mobile/services/floorplan_service.dart';
 import 'package:planova_mobile/services/pathfinding_service.dart';
 import 'package:planova_mobile/services/indoor_positioning_service.dart';
-import 'package:planova_mobile/widgets/map_3d_view.dart';
 
 class NavigationScreen extends StatefulWidget {
   final FloorplanModel floorplan;
@@ -24,7 +24,6 @@ class _NavigationScreenState extends State<NavigationScreen>
     with SingleTickerProviderStateMixin {
   final FloorplanService _floorplanService = FloorplanService();
   final PathfindingService _pathfindingService = PathfindingService();
-
   late IndoorPositioningService _positioningService;
 
   GridPoint? _startPoint;
@@ -37,11 +36,12 @@ class _NavigationScreenState extends State<NavigationScreen>
   bool _isNavigating = false;
   int _currentStepIndex = 0;
 
-  // Real-time positioning
   GridPoint? _currentPosition;
   double _currentHeading = 0;
   bool _isMoving = false;
 
+  final TransformationController _transformationController =
+      TransformationController();
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
 
@@ -63,7 +63,6 @@ class _NavigationScreenState extends State<NavigationScreen>
       CurvedAnimation(parent: _animationController, curve: Curves.easeIn),
     );
 
-    // Initialize positioning service
     _positioningService = IndoorPositioningService(
       onPositionUpdate: _onPositionUpdate,
       onHeadingUpdate: _onHeadingUpdate,
@@ -75,28 +74,17 @@ class _NavigationScreenState extends State<NavigationScreen>
   void dispose() {
     _positioningService.dispose();
     _animationController.dispose();
+    _transformationController.dispose();
     super.dispose();
   }
 
   Future<void> _requestPermissions() async {
-    print('🔵 [NAV] Requesting permissions...');
-
-    final permissions = [
-      Permission.activityRecognition,
-      Permission.location,
-      Permission.sensors,
-    ];
-
-    for (var permission in permissions) {
-      final status = await permission.request();
-      print('🔵 [NAV] ${permission.toString()}: $status');
-    }
+    await Permission.activityRecognition.request();
+    await Permission.location.request();
   }
 
   Future<void> _loadGridData() async {
     try {
-      print('🔵 [NAV] Loading grid data...');
-
       final data = await _floorplanService.getFloorplanWithGrid(
         widget.floorplan.floorplanId,
       );
@@ -106,23 +94,14 @@ class _NavigationScreenState extends State<NavigationScreen>
           _gridModel = data['grid'] as GridModel;
           _isLoading = false;
         });
-        print(
-          '✅ [NAV] Grid loaded: ${_gridModel!.width}x${_gridModel!.height}',
-        );
+        print('✅ Grid: ${_gridModel!.width}x${_gridModel!.height}');
       } else {
-        setState(() {
-          _isLoading = false;
-        });
+        setState(() => _isLoading = false);
       }
 
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _getImageSize();
-      });
+      WidgetsBinding.instance.addPostFrameCallback((_) => _getImageSize());
     } catch (e) {
-      print('❌ [NAV] Error loading grid: $e');
-      setState(() {
-        _isLoading = false;
-      });
+      setState(() => _isLoading = false);
     }
   }
 
@@ -130,97 +109,124 @@ class _NavigationScreenState extends State<NavigationScreen>
     final RenderBox? renderBox =
         _imageKey.currentContext?.findRenderObject() as RenderBox?;
     if (renderBox != null) {
-      setState(() {
-        _imageSize = renderBox.size;
-      });
+      setState(() => _imageSize = renderBox.size);
     }
   }
 
   void _handleTapOnImage(TapDownDetails details) {
     if (_gridModel == null || _imageSize == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please wait for floorplan to load'),
-          duration: Duration(seconds: 2),
-        ),
-      );
+      print('⚠️ Grid or image size not ready');
       return;
     }
 
     final localPosition = details.localPosition;
 
-    // Convert pixel tap to grid coordinates
-    final gridPoint = GridPoint.fromPixelOffset(
-      localPosition,
-      _gridModel!.cellSize,
-    );
+    // CRITICAL FIX: Account for image scaling
+    final imageWidth = _gridModel!.metadata.imageWidth.toDouble();
+    final imageHeight = _gridModel!.metadata.imageHeight.toDouble();
 
-    // Validate bounds
-    if (gridPoint.row < 0 ||
-        gridPoint.row >= _gridModel!.height ||
-        gridPoint.col < 0 ||
-        gridPoint.col >= _gridModel!.width) {
-      print('⚠️ [NAV] Tap outside grid bounds');
-      return;
+    // Calculate actual image display size (maintaining aspect ratio)
+    final screenWidth = _imageSize!.width;
+    final screenHeight = _imageSize!.height;
+
+    final imageAspect = imageWidth / imageHeight;
+    final screenAspect = screenWidth / screenHeight;
+
+    double displayWidth, displayHeight, offsetX, offsetY;
+
+    if (screenAspect > imageAspect) {
+      // Screen is wider - image fits to height
+      displayHeight = screenHeight;
+      displayWidth = imageWidth * (screenHeight / imageHeight);
+      offsetX = (screenWidth - displayWidth) / 2;
+      offsetY = 0;
+    } else {
+      // Screen is taller - image fits to width
+      displayWidth = screenWidth;
+      displayHeight = imageHeight * (screenWidth / imageWidth);
+      offsetX = 0;
+      offsetY = (screenHeight - displayHeight) / 2;
     }
 
-    // Check if wall
-    if (_gridModel!.grid[gridPoint.row][gridPoint.col] == 1) {
+    // Adjust tap position to image coordinates
+    final imageTapX =
+        (localPosition.dx - offsetX) * (imageWidth / displayWidth);
+    final imageTapY =
+        (localPosition.dy - offsetY) * (imageHeight / displayHeight);
+
+    // Convert to grid coordinates
+    final cellSize = _gridModel!.cellSize.toDouble();
+    final gridCol = (imageTapX / cellSize).floor();
+    final gridRow = (imageTapY / cellSize).floor();
+
+    print(
+      '🔵 [TAP] Screen: (${localPosition.dx.toStringAsFixed(0)}, ${localPosition.dy.toStringAsFixed(0)})',
+    );
+    print(
+      '🔵 [TAP] Image: (${imageTapX.toStringAsFixed(0)}, ${imageTapY.toStringAsFixed(0)})',
+    );
+    print('🔵 [TAP] Grid: ($gridRow, $gridCol)');
+
+    // Validate grid position
+    if (gridRow < 0 ||
+        gridRow >= _gridModel!.height ||
+        gridCol < 0 ||
+        gridCol >= _gridModel!.width) {
+      print('❌ [TAP] Outside grid bounds');
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Cannot select a wall. Tap on walkable area.'),
+          content: Text('Outside floorplan'),
           backgroundColor: Colors.orange,
-          duration: Duration(seconds: 2),
         ),
       );
       return;
     }
 
-    print('🔵 [NAV] Selected: $gridPoint');
+    // Check if wall
+    if (_gridModel!.grid[gridRow][gridCol] == 1) {
+      print('❌ [TAP] Wall detected at ($gridRow, $gridCol)');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot select wall'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    final gridPoint = GridPoint(gridRow, gridCol);
+    print('✅ [TAP] Valid point: $gridPoint');
 
     setState(() {
       if (_selectingStart) {
         _startPoint = gridPoint;
         _selectingStart = false;
         _route = null;
-
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('✅ Start point selected! Now tap your destination.'),
+            content: Text('✅ Start selected'),
             backgroundColor: Colors.green,
-            duration: Duration(seconds: 2),
           ),
         );
       } else {
         _endPoint = gridPoint;
-
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('🔄 Calculating best route...'),
+            content: Text('Calculating...'),
             backgroundColor: Colors.blue,
-            duration: Duration(seconds: 2),
           ),
         );
-
         _calculateRoute();
       }
     });
   }
 
   Future<void> _calculateRoute() async {
-    if (_startPoint == null || _endPoint == null || _gridModel == null) {
-      return;
-    }
+    if (_startPoint == null || _endPoint == null || _gridModel == null) return;
 
-    setState(() {
-      _isCalculating = true;
-    });
+    setState(() => _isCalculating = true);
 
     try {
-      print('🔵 [NAV] Calculating route...');
-      print('🔵 [NAV] From: $_startPoint');
-      print('🔵 [NAV] To: $_endPoint');
-
       final route = await _pathfindingService.findPath(
         gridModel: _gridModel!,
         start: _startPoint!,
@@ -233,47 +239,29 @@ class _NavigationScreenState extends State<NavigationScreen>
           _route = route;
           _isCalculating = false;
         });
-
-        print('✅ [NAV] Route calculated');
-        print('✅ [NAV] Distance: ${route.distance.toStringAsFixed(1)}m');
-        print('✅ [NAV] Steps: ${route.directions.length}');
-
-        // Start navigation
         _startNavigationMode();
       } else {
-        setState(() {
-          _isCalculating = false;
-        });
-
+        setState(() => _isCalculating = false);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('❌ No path found between these points'),
+            content: Text('No path found'),
             backgroundColor: Colors.red,
           ),
         );
       }
     } catch (e) {
-      print('❌ [NAV] Route calculation error: $e');
-      setState(() {
-        _isCalculating = false;
-      });
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
-      );
+      setState(() => _isCalculating = false);
     }
   }
 
   Future<void> _startNavigationMode() async {
-    if (_startPoint == null || _gridModel == null) return;
+    if (_startPoint == null || _gridModel == null || _route == null) return;
 
-    print('🔵 [NAV] Starting navigation mode...');
-
-    // Initialize positioning service
     await _positioningService.initialize(
       startPosition: _startPoint!,
       grid: _gridModel!,
       cellSize: _gridModel!.cellSize,
+      routePath: _route!.path,
     );
 
     setState(() {
@@ -283,108 +271,76 @@ class _NavigationScreenState extends State<NavigationScreen>
     });
 
     _animationController.forward();
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('🚶 Navigation started! Start walking.'),
-        backgroundColor: Colors.green,
-        duration: Duration(seconds: 3),
-      ),
-    );
   }
 
   void _onPositionUpdate(GridPoint newPosition) {
     if (!mounted) return;
 
-    setState(() {
-      _currentPosition = newPosition;
-    });
+    setState(() => _currentPosition = newPosition);
 
-    // Check if reached destination
     if (_endPoint != null && newPosition == _endPoint) {
       _onArrival();
       return;
     }
 
-    // Update current instruction based on position
     _updateCurrentInstruction();
   }
 
   void _onHeadingUpdate(double heading) {
     if (!mounted) return;
-
-    setState(() {
-      _currentHeading = heading;
-    });
+    setState(() => _currentHeading = heading);
   }
 
   void _onMovementUpdate(bool isMoving) {
     if (!mounted) return;
-
-    setState(() {
-      _isMoving = isMoving;
-    });
+    setState(() => _isMoving = isMoving);
   }
 
   void _updateCurrentInstruction() {
     if (_route == null || _currentPosition == null) return;
 
-    // Find which part of the route we're on
-    // Update step index based on progress
     final totalPath = _route!.path.length;
-    final stepsPerInstruction = totalPath / _route!.directions.length;
-
-    // Find closest point on route
-    double minDistance = double.infinity;
     int closestIndex = 0;
+    double minDist = double.infinity;
 
     for (int i = 0; i < _route!.path.length; i++) {
-      final distance = _currentPosition!.distanceTo(_route!.path[i]);
-      if (distance < minDistance) {
-        minDistance = distance;
+      final dist = _currentPosition!.distanceTo(_route!.path[i]);
+      if (dist < minDist) {
+        minDist = dist;
         closestIndex = i;
       }
     }
 
-    // Calculate instruction index
-    final newStepIndex = (closestIndex / stepsPerInstruction).floor().clamp(
-      0,
-      _route!.directions.length - 1,
-    );
+    final newStepIndex =
+        ((closestIndex / totalPath) * _route!.directions.length).floor().clamp(
+          0,
+          _route!.directions.length - 1,
+        );
 
     if (newStepIndex != _currentStepIndex) {
-      setState(() {
-        _currentStepIndex = newStepIndex;
-      });
-      print('📍 [NAV] Instruction updated to step ${newStepIndex + 1}');
+      setState(() => _currentStepIndex = newStepIndex);
     }
   }
 
   void _onArrival() {
     _positioningService.dispose();
-
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (context) => AlertDialog(
-        title: const Text('🎉 You\'ve Arrived!'),
+        title: const Text('🎉 Arrived!'),
         content: const Text('You have reached your destination.'),
         actions: [
           TextButton(
             onPressed: () {
               Navigator.pop(context);
-              _exitNavigation();
+              Navigator.pop(context);
             },
             child: const Text('OK'),
           ),
         ],
       ),
     );
-  }
-
-  void _exitNavigation() {
-    _positioningService.dispose();
-    Navigator.pop(context);
   }
 
   void _resetNavigation() {
@@ -400,28 +356,6 @@ class _NavigationScreenState extends State<NavigationScreen>
     });
   }
 
-  void _recalibrate() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Recalibrate Position'),
-        content: const Text('Tap on the map to set your current position.'),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              setState(() {
-                _selectingStart = true;
-                _isNavigating = false;
-              });
-            },
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -434,64 +368,37 @@ class _NavigationScreenState extends State<NavigationScreen>
     if (_gridModel == null) {
       return Scaffold(
         appBar: AppBar(title: Text(widget.floorplan.buildingName)),
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: const [
-              Icon(Icons.error, size: 64, color: Colors.red),
-              SizedBox(height: 16),
-              Text('Floorplan not processed yet'),
-            ],
-          ),
-        ),
+        body: const Center(child: Text('Not processed')),
       );
     }
 
-    // REAL-TIME NAVIGATION MODE
     if (_route != null && _isNavigating && _currentPosition != null) {
-      return _buildRealTimeNavigation();
+      return _buildNavigationMode();
     }
 
-    // SELECTION MODE
     return _buildSelectionMode();
   }
 
-  // REAL-TIME NAVIGATION (Google Maps style with live position)
-  Widget _buildRealTimeNavigation() {
+  Widget _buildNavigationMode() {
     if (_route == null || _currentPosition == null) return const SizedBox();
 
     final currentDirection = _route!.directions[_currentStepIndex];
-
-    // Calculate remaining distance
-    double remainingDistance = 0;
-    for (int i = 0; i < _route!.path.length - 1; i++) {
-      final p1 = _route!.path[i];
-      final p2 = _route!.path[i + 1];
-      final dist = p1.distanceTo(p2);
-      remainingDistance += dist;
-    }
-    remainingDistance = remainingDistance * _gridModel!.cellSize * 0.5;
-
-    final remainingTime = (remainingDistance / 1.4).round();
+    final remainingDistance = _route!.distance;
+    final remainingTime = _route!.estimatedTime;
 
     return Scaffold(
       body: Stack(
         children: [
-          // BACKGROUND MAP
           Positioned.fill(
-            child: Container(
-              color: Colors.grey[200],
-              child: Map3DView(
-                heading: _currentHeading,
-                tilt: 30,
-                currentPosition: _currentPosition,
-                cellSize: _gridModel!.cellSize,
+            child: InteractiveViewer(
+              transformationController: _transformationController,
+              minScale: 0.5,
+              maxScale: 4.0,
+              child: Container(
+                color: Colors.grey[200],
                 child: Stack(
                   children: [
-                    // Floorplan image
                     Center(child: _buildFloorplanImage()),
-
-                    // Route line
                     CustomPaint(
                       size: Size.infinite,
                       painter: RoutePainter(
@@ -500,8 +407,6 @@ class _NavigationScreenState extends State<NavigationScreen>
                         currentPosition: _currentPosition!,
                       ),
                     ),
-
-                    // CURRENT POSITION INDICATOR (Blue arrow)
                     Positioned(
                       left:
                           _currentPosition!.col *
@@ -512,7 +417,7 @@ class _NavigationScreenState extends State<NavigationScreen>
                               _gridModel!.cellSize.toDouble() -
                           20,
                       child: Transform.rotate(
-                        angle: _currentHeading * (3.14159 / 180),
+                        angle: _currentHeading * (pi / 180),
                         child: Container(
                           width: 40,
                           height: 40,
@@ -536,8 +441,6 @@ class _NavigationScreenState extends State<NavigationScreen>
                         ),
                       ),
                     ),
-
-                    // DESTINATION MARKER
                     if (_endPoint != null)
                       Positioned(
                         left:
@@ -557,7 +460,6 @@ class _NavigationScreenState extends State<NavigationScreen>
               ),
             ),
           ),
-          // TOP INSTRUCTION CARD
           Positioned(
             top: 60,
             left: 16,
@@ -627,18 +529,11 @@ class _NavigationScreenState extends State<NavigationScreen>
                         ],
                       ),
                     ),
-                    const Icon(
-                      Icons.explore_outlined,
-                      color: Colors.white70,
-                      size: 28,
-                    ),
                   ],
                 ),
               ),
             ),
           ),
-
-          // BOTTOM INFO CARD
           Positioned(
             bottom: 0,
             left: 0,
@@ -651,13 +546,6 @@ class _NavigationScreenState extends State<NavigationScreen>
                   topLeft: Radius.circular(24),
                   topRight: Radius.circular(24),
                 ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.1),
-                    blurRadius: 20,
-                    offset: const Offset(0, -4),
-                  ),
-                ],
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -686,7 +574,7 @@ class _NavigationScreenState extends State<NavigationScreen>
                               ),
                             ),
                             Text(
-                              '${remainingDistance.toStringAsFixed(0)} m • Step ${_currentStepIndex + 1}/${_route!.directions.length}',
+                              '${remainingDistance.toStringAsFixed(0)} m',
                               style: TextStyle(
                                 fontSize: 14,
                                 color: Colors.grey[600],
@@ -695,17 +583,10 @@ class _NavigationScreenState extends State<NavigationScreen>
                           ],
                         ),
                       ),
-                      IconButton(
-                        icon: const Icon(Icons.my_location),
-                        onPressed: _recalibrate,
-                        tooltip: 'Recalibrate',
-                      ),
-                      const SizedBox(width: 8),
                       ElevatedButton(
-                        onPressed: _exitNavigation,
+                        onPressed: () => Navigator.pop(context),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.red[600],
-                          foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(
                             horizontal: 24,
                             vertical: 16,
@@ -730,7 +611,7 @@ class _NavigationScreenState extends State<NavigationScreen>
                       Icon(Icons.sensors, color: Colors.green[600], size: 16),
                       const SizedBox(width: 8),
                       Text(
-                        'Steps: ${_positioningService.totalSteps} • Heading: ${_currentHeading.toStringAsFixed(0)}°',
+                        'Steps: ${_positioningService.totalSteps}',
                         style: TextStyle(color: Colors.grey[600], fontSize: 12),
                       ),
                     ],
@@ -747,30 +628,10 @@ class _NavigationScreenState extends State<NavigationScreen>
   IconData _getDirectionIcon(String direction) {
     if (direction.contains('Start')) return Icons.my_location;
     if (direction.contains('arrived')) return Icons.location_on;
-    if (direction.contains('north') &&
-        !direction.contains('east') &&
-        !direction.contains('west')) {
-      return Icons.arrow_upward;
-    }
-    if (direction.contains('south') &&
-        !direction.contains('east') &&
-        !direction.contains('west')) {
-      return Icons.arrow_downward;
-    }
-    if (direction.contains('east') &&
-        !direction.contains('north') &&
-        !direction.contains('south')) {
-      return Icons.arrow_forward;
-    }
-    if (direction.contains('west') &&
-        !direction.contains('north') &&
-        !direction.contains('south')) {
-      return Icons.arrow_back;
-    }
-    if (direction.contains('northeast')) return Icons.north_east;
-    if (direction.contains('northwest')) return Icons.north_west;
-    if (direction.contains('southeast')) return Icons.south_east;
-    if (direction.contains('southwest')) return Icons.south_west;
+    if (direction.contains('north')) return Icons.arrow_upward;
+    if (direction.contains('south')) return Icons.arrow_downward;
+    if (direction.contains('east')) return Icons.arrow_forward;
+    if (direction.contains('west')) return Icons.arrow_back;
     return Icons.straight;
   }
 
@@ -792,42 +653,18 @@ class _NavigationScreenState extends State<NavigationScreen>
             width: double.infinity,
             padding: const EdgeInsets.all(16),
             color: _selectingStart ? Colors.green[50] : Colors.red[50],
-            child: Row(
-              children: [
-                Icon(
-                  _selectingStart ? Icons.location_on : Icons.flag,
-                  color: _selectingStart ? Colors.green : Colors.red,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    _selectingStart
-                        ? 'Tap to select your START location'
-                        : 'Tap to select your DESTINATION',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: _selectingStart
-                          ? Colors.green[900]
-                          : Colors.red[900],
-                    ),
-                  ),
-                ),
-              ],
+            child: Text(
+              _selectingStart ? 'Tap START location' : 'Tap DESTINATION',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: _selectingStart ? Colors.green[900] : Colors.red[900],
+              ),
             ),
           ),
           Expanded(
             child: _isCalculating
-                ? const Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        CircularProgressIndicator(),
-                        SizedBox(height: 16),
-                        Text('Finding best route...'),
-                      ],
-                    ),
-                  )
+                ? const Center(child: CircularProgressIndicator())
                 : GestureDetector(
                     onTapDown: _handleTapOnImage,
                     child: Container(
@@ -875,7 +712,6 @@ class _NavigationScreenState extends State<NavigationScreen>
     if (MockStorageService.isMockUrl(imageUrl)) {
       final mockStorage = MockStorageService();
       final localFile = mockStorage.getLocalFile(imageUrl);
-
       return Image.file(localFile, key: _imageKey, fit: BoxFit.contain);
     } else {
       return Image.network(imageUrl, key: _imageKey, fit: BoxFit.contain);
@@ -892,13 +728,6 @@ class _NavigationScreenState extends State<NavigationScreen>
             color: color,
             shape: BoxShape.circle,
             border: Border.all(color: Colors.white, width: 3),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.3),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
-              ),
-            ],
           ),
           child: Center(
             child: Text(
@@ -911,23 +740,11 @@ class _NavigationScreenState extends State<NavigationScreen>
             ),
           ),
         ),
-        Container(
-          width: 0,
-          height: 0,
-          decoration: BoxDecoration(
-            border: Border(
-              left: BorderSide(color: Colors.transparent, width: 10),
-              right: BorderSide(color: Colors.transparent, width: 10),
-              top: BorderSide(color: color, width: 15),
-            ),
-          ),
-        ),
       ],
     );
   }
 }
 
-// Updated Route Painter
 class RoutePainter extends CustomPainter {
   final List<GridPoint> path;
   final int cellSize;
@@ -943,30 +760,22 @@ class RoutePainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     if (path.length < 2) return;
 
-    // Find current index on path
     int currentIndex = 0;
-    double minDist = double.infinity;
-
     for (int i = 0; i < path.length; i++) {
-      final dist = currentPosition.distanceTo(path[i]);
-      if (dist < minDist) {
-        minDist = dist;
+      if (path[i] == currentPosition) {
         currentIndex = i;
+        break;
       }
     }
 
-    // Completed path (gray)
     final completedPaint = Paint()
       ..color = Colors.grey[400]!
       ..strokeWidth = 6
-      ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round;
 
-    // Remaining path (blue)
     final remainingPaint = Paint()
       ..color = const Color(0xFF4285F4)
       ..strokeWidth = 6
-      ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round;
 
     for (int i = 0; i < path.length - 1; i++) {
@@ -992,8 +801,5 @@ class RoutePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(RoutePainter oldDelegate) =>
-      oldDelegate.path != path ||
-      oldDelegate.cellSize != cellSize ||
-      oldDelegate.currentPosition != currentPosition;
+  bool shouldRepaint(RoutePainter oldDelegate) => true;
 }

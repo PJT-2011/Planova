@@ -1,139 +1,91 @@
-import 'dart:io';
 import 'dart:typed_data';
+import 'dart:math';
 import 'package:image/image.dart' as img;
 import 'package:planova_mobile/models/grid_model.dart';
 
 class GridProcessor {
-  /// Process floorplan image into grid
-  /// This replaces Member 3's Python code
-  Future<GridModel> processImage(File imageFile, {int cellSize = 20}) async {
+  Future<GridModel> processImage({
+    required Uint8List imageBytes,
+    int cellSize = 15, // SMALLER cells = better precision
+  }) async {
     final startTime = DateTime.now();
 
-    print('🔵 [GRID PROCESSOR] Starting grid processing...');
-    print('🔵 [GRID PROCESSOR] Cell size: $cellSize pixels');
-    print('🔵 [GRID PROCESSOR] File path: ${imageFile.path}');
+    print('🔵 [GRID] Processing image...');
 
-    // Read image bytes
-    final bytes = await imageFile.readAsBytes();
+    final image = img.decodeImage(imageBytes);
+    if (image == null) throw Exception('Failed to decode image');
 
-    // Decode image
-    img.Image? image = img.decodeImage(bytes);
-    if (image == null) {
-      throw Exception('Failed to decode image');
-    }
+    print('✅ [GRID] Image: ${image.width}x${image.height}');
 
-    print('✅ Image loaded: ${image.width}x${image.height}');
-
-    // Convert to grayscale
+    // Grayscale
     final grayscale = img.grayscale(image);
 
-    // Apply threshold to detect walls
-    // Pixels darker than 200 = walls (1)
-    // Pixels lighter than 200 = walkable (0)
-    final binary = _applyThreshold(grayscale, threshold: 200);
+    // Create grid
+    final width = (image.width / cellSize).ceil();
+    final height = (image.height / cellSize).ceil();
 
-    // Convert to grid
-    final grid = _imageToGrid(binary, cellSize);
+    print('🔵 [GRID] Creating ${width}x${height} grid (cellSize: $cellSize)');
 
-    // Calculate metadata
-    int wallCells = 0;
-    int walkableCells = 0;
+    final grid = List.generate(
+      height,
+      (row) => List.generate(width, (col) => 0),
+    );
 
-    for (var row in grid) {
-      for (var cell in row) {
-        if (cell == 1) {
-          wallCells++;
-        } else {
-          walkableCells++;
+    // CRITICAL: Simple darkness threshold - NO dilation
+    final threshold = 180; // Darker than this = wall
+
+    for (int row = 0; row < height; row++) {
+      for (int col = 0; col < width; col++) {
+        final startX = col * cellSize;
+        final startY = row * cellSize;
+
+        int darkPixels = 0;
+        int totalPixels = 0;
+
+        for (int dy = 0; dy < cellSize && startY + dy < image.height; dy++) {
+          for (int dx = 0; dx < cellSize && startX + dx < image.width; dx++) {
+            final pixel = grayscale.getPixel(startX + dx, startY + dy);
+            totalPixels++;
+            if (pixel.r < threshold) darkPixels++;
+          }
+        }
+
+        // Only mark as wall if >50% dark (LESS aggressive)
+        if (darkPixels / totalPixels > 0.5) {
+          grid[row][col] = 1;
         }
       }
     }
 
-    final processingTime =
-        DateTime.now().difference(startTime).inMilliseconds / 1000.0;
+    // Count
+    int wallCells = 0;
+    for (var row in grid) {
+      for (var cell in row) {
+        if (cell == 1) wallCells++;
+      }
+    }
 
-    print('✅ Grid created: ${grid.length}x${grid[0].length}');
-    print('✅ Walkable cells: $walkableCells');
-    print('✅ Wall cells: $wallCells');
-    print('✅ Processing time: ${processingTime.toStringAsFixed(2)}s');
+    final totalCells = width * height;
+    final wallPercent = (wallCells / totalCells * 100);
+
+    print('✅ [GRID] Grid: ${width}x${height}');
+    print('✅ [GRID] Walls: $wallCells (${wallPercent.toStringAsFixed(1)}%)');
+    print('✅ [GRID] Walkable: ${totalCells - wallCells}');
+
+    final time = DateTime.now().difference(startTime).inMilliseconds / 1000;
 
     return GridModel(
       grid: grid,
-      width: grid[0].length,
-      height: grid.length,
+      width: width,
+      height: height,
       cellSize: cellSize,
       metadata: GridMetadata(
         imageWidth: image.width,
         imageHeight: image.height,
-        processingTime: processingTime,
+        processingTime: time,
         wallCells: wallCells,
-        walkableCells: walkableCells,
+        walkableCells: totalCells - wallCells,
       ),
     );
-  }
-
-  /// Apply binary threshold
-  /// Dark pixels (< threshold) become walls (255/white in binary)
-  /// Light pixels (>= threshold) become walkable (0/black in binary)
-  img.Image _applyThreshold(img.Image image, {required int threshold}) {
-    final result = img.Image(width: image.width, height: image.height);
-
-    for (int y = 0; y < image.height; y++) {
-      for (int x = 0; x < image.width; x++) {
-        final pixel = image.getPixel(x, y);
-        final luminance = img.getLuminance(pixel);
-
-        // Invert: dark = wall (255), light = walkable (0)
-        final value = luminance < threshold ? 255 : 0;
-        result.setPixelRgba(x, y, value, value, value, 255);
-      }
-    }
-
-    return result;
-  }
-
-  /// Convert binary image to grid
-  /// 0 = walkable, 1 = wall
-  List<List<int>> _imageToGrid(img.Image binary, int cellSize) {
-    final rows = binary.height ~/ cellSize;
-    final cols = binary.width ~/ cellSize;
-
-    final grid = <List<int>>[];
-
-    for (int row = 0; row < rows; row++) {
-      final gridRow = <int>[];
-
-      for (int col = 0; col < cols; col++) {
-        // Get average luminance of cell
-        double sum = 0;
-        int count = 0;
-
-        for (
-          int y = row * cellSize;
-          y < (row + 1) * cellSize && y < binary.height;
-          y++
-        ) {
-          for (
-            int x = col * cellSize;
-            x < (col + 1) * cellSize && x < binary.width;
-            x++
-          ) {
-            final pixel = binary.getPixel(x, y);
-            sum += img.getLuminance(pixel);
-            count++;
-          }
-        }
-
-        final average = count > 0 ? sum / count : 0;
-
-        // If average is dark (walls are white/255 in binary) = wall
-        // If average is light (walkable is black/0 in binary) = walkable
-        gridRow.add(average > 127 ? 1 : 0);
-      }
-
-      grid.add(gridRow);
-    }
-
-    return grid;
   }
 }

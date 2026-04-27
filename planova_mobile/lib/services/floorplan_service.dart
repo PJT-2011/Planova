@@ -1,7 +1,9 @@
 import 'dart:io';
+import 'dart:typed_data'; // Added for Uint8List
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:planova_mobile/models/floorplan_model.dart';
 import 'package:planova_mobile/models/grid_model.dart';
 import 'package:planova_mobile/services/mock_storage_service.dart';
@@ -33,11 +35,8 @@ class FloorplanService {
 
       print('🔵 [UPLOAD] Step 1: Generating floorplan ID...');
       final floorplanId = _firestore.collection('floorplans').doc().id;
-      print('✅ [UPLOAD] Floorplan ID: $floorplanId');
 
       print('🔵 [UPLOAD] Step 2: Uploading image...');
-      print('🔵 [UPLOAD] Storage mode: ${USE_MOCK_STORAGE ? "MOCK" : "REAL"}');
-
       String imageUrl;
 
       if (USE_MOCK_STORAGE) {
@@ -45,32 +44,24 @@ class FloorplanService {
           imageFile: imageFile,
           userId: user.uid,
           floorplanId: floorplanId,
+          onProgress: (progress) {
+            print(
+              '📤 Upload progress: ${(progress * 100).toStringAsFixed(0)}%',
+            );
+          },
         );
-        print('✅ [UPLOAD] Image saved to device storage');
       } else {
-        print('🔵 [UPLOAD] Uploading to Firebase Storage...');
         final storageRef = _storage.ref().child(
           'floorplans/${user.uid}/$floorplanId.jpg',
         );
-
         final uploadTask = storageRef.putFile(
           imageFile,
           SettableMetadata(contentType: 'image/jpeg'),
         );
 
-        uploadTask.snapshotEvents.listen((snapshot) {
-          double progress = snapshot.bytesTransferred / snapshot.totalBytes;
-          print(
-            '📤 [UPLOAD] Progress: ${(progress * 100).toStringAsFixed(1)}%',
-          );
-        });
-
         final snapshot = await uploadTask;
         imageUrl = await snapshot.ref.getDownloadURL();
-        print('✅ [UPLOAD] Image uploaded to Firebase');
       }
-
-      print('✅ [UPLOAD] Image URL: $imageUrl');
 
       print('🔵 [UPLOAD] Step 3: Creating Firestore document...');
       final floorplanData = {
@@ -91,13 +82,11 @@ class FloorplanService {
           .collection('floorplans')
           .doc(floorplanId)
           .set(floorplanData);
-      print('✅ [UPLOAD] Firestore document created');
 
       // Step 4: Process the image automatically
-      print('🔵 [UPLOAD] Step 4: Starting image processing...');
-      _processFloorplanInBackground(floorplanId, imageFile);
+      _processFloorplanInBackground(floorplanId);
 
-      final floorplan = FloorplanModel(
+      return FloorplanModel(
         floorplanId: floorplanId,
         userId: user.uid,
         buildingName: buildingName,
@@ -107,61 +96,103 @@ class FloorplanService {
         status: 'uploaded',
         tags: tags,
       );
-
-      print('✅✅✅ [UPLOAD] UPLOAD SUCCESSFUL!');
-      return floorplan;
     } catch (e) {
       print('❌ [UPLOAD] Error: $e');
       throw 'Upload failed: $e';
     }
   }
 
-  /// Process floorplan in background
-  Future<void> _processFloorplanInBackground(
-    String floorplanId,
-    File imageFile,
-  ) async {
+  /// FIXED: Fetches bytes and uses the correct named parameter
+  Future<void> _processFloorplanInBackground(String floorplanId) async {
     try {
-      // Update status to processing
-      await _firestore.collection('floorplans').doc(floorplanId).update({
-        'status': 'processing',
-      });
-
       print('🔵 [PROCESSING] Processing floorplan: $floorplanId');
 
-      // Process image to grid (Member 3's work)
+      // Get floorplan data
+      final doc = await _firestore
+          .collection('floorplans')
+          .doc(floorplanId)
+          .get();
+
+      if (!doc.exists) {
+        print('❌ [PROCESSING] Floorplan not found');
+        return;
+      }
+
+      final data = doc.data()!;
+      final imageUrl = data['imageUrl'] as String;
+
+      print('🔵 [PROCESSING] Image URL: $imageUrl');
+
+      // Get image file - FIXED PATH HANDLING
+      File imageFile;
+      if (MockStorageService.isMockUrl(imageUrl)) {
+        final mockStorage = MockStorageService();
+        imageFile = mockStorage.getLocalFile(imageUrl);
+
+        // CRITICAL: Check if file actually exists
+        if (!await imageFile.exists()) {
+          print('❌ [PROCESSING] File does not exist: ${imageFile.path}');
+
+          // Try to find the file in uploads directory
+          final fileName = imageUrl.split('/').last;
+          final uploadsDir = await getApplicationDocumentsDirectory();
+          final alternativePath =
+              '${uploadsDir.path}/floorplans/${data['userId']}/$fileName';
+
+          imageFile = File(alternativePath);
+
+          if (!await imageFile.exists()) {
+            throw Exception('Image file not found at: ${imageFile.path}');
+          }
+
+          print('✅ [PROCESSING] Found file at: ${imageFile.path}');
+        }
+      } else {
+        // For real Firebase Storage URLs, download first
+        throw UnimplementedError(
+          'Firebase Storage download not implemented yet',
+        );
+      }
+
+      print('🔵 [PROCESSING] Reading image bytes...');
+
+      // Read image bytes
+      final imageBytes = await imageFile.readAsBytes();
+      print('✅ [PROCESSING] Image read: ${imageBytes.length} bytes');
+
+      print('🔵 [PROCESSING] Starting grid processing...');
+
+      // Process image
       final gridModel = await _gridProcessor.processImage(
-        imageFile,
+        imageBytes: imageBytes,
         cellSize: 20,
       );
 
       print('✅ [PROCESSING] Grid generated successfully');
 
-      // Save processed data to Firestore
+      // Save to Firestore
       await _firestore.collection('floorplans').doc(floorplanId).update({
         'status': 'ready',
         'processedAt': FieldValue.serverTimestamp(),
         'processedData': gridModel.toJson(),
       });
 
-      print('✅ [PROCESSING] Processing complete and saved to Firestore');
-    } catch (e) {
+      print('✅ [PROCESSING] Processing complete!');
+    } catch (e, stackTrace) {
       print('❌ [PROCESSING] Error: $e');
+      print('❌ [PROCESSING] Stack trace: $stackTrace');
 
       // Update status to failed
       await _firestore.collection('floorplans').doc(floorplanId).update({
         'status': 'failed',
-        'processingError': e.toString(),
+        'error': e.toString(),
       });
     }
   }
 
-  /// Get user's floorplans
   Stream<List<FloorplanModel>> getUserFloorplans() {
     final user = _auth.currentUser;
-    if (user == null) {
-      return Stream.value([]);
-    }
+    if (user == null) return Stream.value([]);
 
     return _firestore
         .collection('floorplans')
@@ -175,24 +206,17 @@ class FloorplanService {
         });
   }
 
-  /// Get single floorplan with processed data
   Future<Map<String, dynamic>?> getFloorplanWithGrid(String floorplanId) async {
     try {
       final doc = await _firestore
           .collection('floorplans')
           .doc(floorplanId)
           .get();
-
-      if (!doc.exists) {
-        return null;
-      }
+      if (!doc.exists) return null;
 
       final data = doc.data()!;
-
-      // Get floorplan model
       final floorplan = FloorplanModel.fromFirestore(doc);
 
-      // Get grid data if processed
       GridModel? gridModel;
       if (data['processedData'] != null) {
         gridModel = GridModel.fromJson(data['processedData']);
@@ -200,30 +224,20 @@ class FloorplanService {
 
       return {'floorplan': floorplan, 'grid': gridModel};
     } catch (e) {
-      print('❌ [GET FLOORPLAN] Error: $e');
       return null;
     }
   }
 
-  /// Delete floorplan
   Future<void> deleteFloorplan(String floorplanId, String imageUrl) async {
     try {
-      print('🔵 [DELETE] Deleting floorplan: $floorplanId');
-
-      // Delete image
       if (MockStorageService.isMockUrl(imageUrl)) {
         await _mockStorage.deleteImage(imageUrl);
       } else {
         final ref = _storage.refFromURL(imageUrl);
         await ref.delete();
       }
-
-      // Delete Firestore document
       await _firestore.collection('floorplans').doc(floorplanId).delete();
-
-      print('✅ [DELETE] Floorplan deleted');
     } catch (e) {
-      print('❌ [DELETE] Error: $e');
       throw 'Failed to delete floorplan: $e';
     }
   }

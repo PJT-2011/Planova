@@ -4,375 +4,294 @@ import 'package:planova_mobile/models/grid_model.dart';
 import 'package:planova_mobile/models/route_model.dart';
 
 class PathfindingService {
-  late List<List<int>> grid;
-  late int rows;
-  late int cols;
-  late List<List<double>> distanceMap;
-
-  /// Find path from start to end using A* algorithm
   Future<RouteModel?> findPath({
     required GridModel gridModel,
     required GridPoint start,
     required GridPoint end,
-    int cellSize = 20,
+    required int cellSize,
   }) async {
-    print('🔵 Starting pathfinding...');
-    print('🔵 Start: $start');
-    print('🔵 End: $end');
+    print('🔵 [PATH] Finding path...');
+    print('   From: $start → To: $end');
+    print('   Grid: ${gridModel.width}x${gridModel.height}');
+    print('   Cell size: $cellSize px');
 
-    grid = gridModel.grid;
-    rows = grid.length;
-    cols = grid[0].length;
-
-    // Validate points
-    if (!_isValid(start) || !_isValid(end)) {
-      print('❌ Invalid start or end point');
-      return null;
-    }
-
-    if (grid[start.row][start.col] == 1 || grid[end.row][end.col] == 1) {
-      print('❌ Start or end point is on a wall');
-      return null;
-    }
-
-    // Generate distance map (distance to nearest wall)
-    distanceMap = _generateDistanceMap();
-
-    // Run A* algorithm
-    final path = _astar(start, end);
+    final path = _astarOptimized(gridModel, start, end);
 
     if (path == null || path.isEmpty) {
-      print('❌ No path found');
+      print('❌ [PATH] No path found');
       return null;
     }
 
-    print('✅ Path found with ${path.length} points');
+    print('✅ [PATH] Found: ${path.length} waypoints');
 
-    // Smooth the path
-    final smoothPath = _smoothPath(path);
-    print('✅ Path smoothed to ${smoothPath.length} points');
+    // Calculate REAL distance
+    // Assuming: floorplan represents ~20m x 20m space
+    // Image size ~700px = 20m → 1px = 0.0286m
+    // With cellSize=15: 1 cell = 15px = 0.43m
 
-    // Generate directions
-    final directions = _generateDirections(smoothPath);
+    final metersPerCell = 0.43; // Calibrate this to your building!
 
-    // Calculate distance
-    final distance = _calculateDistance(smoothPath, cellSize);
+    double totalDistance = 0;
+    for (int i = 0; i < path.length - 1; i++) {
+      final p1 = path[i];
+      final p2 = path[i + 1];
+      final cellDist = sqrt(
+        pow((p2.col - p1.col).toDouble(), 2) +
+            pow((p2.row - p1.row).toDouble(), 2),
+      );
+      totalDistance += cellDist;
+    }
 
-    // Estimate time (walking speed ~1.4 m/s)
-    final estimatedTime = (distance / 1.4).round();
+    final distanceMeters = totalDistance * metersPerCell;
 
-    print('✅ Distance: ${distance.toStringAsFixed(1)}m');
-    print('✅ Time: ${estimatedTime}s');
+    // Walking speed: 1.2 m/s (average indoor walking)
+    final timeSeconds = (distanceMeters / 1.2).round();
+
+    print('✅ [PATH] Distance: ${distanceMeters.toStringAsFixed(1)}m');
+    print(
+      '✅ [PATH] Time: ${timeSeconds}s (${(timeSeconds / 60).toStringAsFixed(1)}min)',
+    );
+    print('✅ [PATH] Cells traveled: ${totalDistance.toStringAsFixed(0)}');
+
+    final directions = _generateDirections(path);
 
     return RouteModel(
-      path: smoothPath,
+      path: path,
       directions: directions,
-      distance: distance,
-      estimatedTime: estimatedTime,
+      distance: distanceMeters,
+      estimatedTime: timeSeconds,
     );
   }
 
-  /// Check if point is valid
-  bool _isValid(GridPoint point) {
-    return point.row >= 0 &&
-        point.row < rows &&
-        point.col >= 0 &&
-        point.col < cols;
-  }
-
-  /// Generate distance map (distance to nearest wall)
-  List<List<double>> _generateDistanceMap() {
-    final distMap = List.generate(rows, (i) => List.filled(cols, 0.0));
-
-    // Find all walls
-    final walls = <GridPoint>[];
-    for (int r = 0; r < rows; r++) {
-      for (int c = 0; c < cols; c++) {
-        if (grid[r][c] == 1) {
-          walls.add(GridPoint(r, c));
-        }
-      }
-    }
-
-    // Calculate distance from each cell to nearest wall
-    for (int r = 0; r < rows; r++) {
-      for (int c = 0; c < cols; c++) {
-        if (grid[r][c] == 0) {
-          if (walls.isEmpty) {
-            distMap[r][c] = double.infinity;
-          } else {
-            double minDist = double.infinity;
-            for (var wall in walls) {
-              final dist = sqrt(pow(r - wall.row, 2) + pow(c - wall.col, 2));
-              if (dist < minDist) {
-                minDist = dist;
-              }
-            }
-            distMap[r][c] = minDist;
-          }
-        } else {
-          distMap[r][c] = 0.0;
-        }
-      }
-    }
-
-    return distMap;
-  }
-
-  /// Heuristic function (Euclidean distance)
-  double _heuristic(GridPoint a, GridPoint b) {
-    return sqrt(pow(a.row - b.row, 2) + pow(a.col - b.col, 2));
-  }
-
-  /// Get neighbors of a node
-  List<_Neighbor> _getNeighbors(GridPoint node) {
-    final neighbors = <_Neighbor>[];
-
-    // 8-directional movement
-    final moves = [
-      _Move(-1, 0, 1.0), // North
-      _Move(1, 0, 1.0), // South
-      _Move(0, -1, 1.0), // West
-      _Move(0, 1, 1.0), // East
-      _Move(-1, -1, 1.414), // Northwest
-      _Move(-1, 1, 1.414), // Northeast
-      _Move(1, -1, 1.414), // Southwest
-      _Move(1, 1, 1.414), // Southeast
-    ];
-
-    for (var move in moves) {
-      final nr = node.row + move.dr;
-      final nc = node.col + move.dc;
-
-      if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
-      if (grid[nr][nc] == 1) continue; // Wall
-
-      // Add penalty for getting too close to walls
-      final distToWall = distanceMap[nr][nc];
-      double penalty = 0;
-
-      if (distToWall < 1.2) {
-        penalty = 10.0; // High penalty for getting too close
-      }
-
-      neighbors.add(_Neighbor(GridPoint(nr, nc), move.baseCost + penalty));
-    }
-
-    return neighbors;
-  }
-
-  /// A* pathfinding algorithm
-  List<GridPoint>? _astar(GridPoint start, GridPoint end) {
+  /// A* optimized
+  List<GridPoint>? _astarOptimized(
+    GridModel grid,
+    GridPoint start,
+    GridPoint end,
+  ) {
     final openSet = PriorityQueue<_Node>();
-    openSet.add(_Node(start, 0));
-
+    final closedSet = <GridPoint>{};
     final cameFrom = <GridPoint, GridPoint>{};
     final gScore = <GridPoint, double>{start: 0};
-    final fScore = <GridPoint, double>{start: _heuristic(start, end)};
+
+    openSet.add(_Node(start, _heuristic(start, end)));
 
     while (openSet.isNotEmpty) {
       final current = openSet.removeFirst();
 
       if (current.point == end) {
-        return _reconstructPath(cameFrom, current.point);
+        return _reconstructPath(cameFrom, end);
       }
 
-      for (var neighbor in _getNeighbors(current.point)) {
-        final tentativeGScore = gScore[current.point]! + neighbor.cost;
+      closedSet.add(current.point);
 
-        if (!gScore.containsKey(neighbor.point) ||
-            tentativeGScore < gScore[neighbor.point]!) {
-          cameFrom[neighbor.point] = current.point;
-          gScore[neighbor.point] = tentativeGScore;
-          final f = tentativeGScore + _heuristic(neighbor.point, end);
-          fScore[neighbor.point] = f;
+      for (final neighbor in _getNeighbors(current.point, grid)) {
+        if (closedSet.contains(neighbor)) continue;
 
-          openSet.add(_Node(neighbor.point, f));
+        // Skip walls
+        if (grid.grid[neighbor.row][neighbor.col] == 1) continue;
+
+        // Calculate cost
+        final isDiagonal =
+            (neighbor.row != current.point.row) &&
+            (neighbor.col != current.point.col);
+        final moveCost = isDiagonal ? 1.414 : 1.0; // Diagonal costs more
+
+        final tentativeG = gScore[current.point]! + moveCost;
+
+        if (!gScore.containsKey(neighbor) || tentativeG < gScore[neighbor]!) {
+          cameFrom[neighbor] = current.point;
+          gScore[neighbor] = tentativeG;
+          final f = tentativeG + _heuristic(neighbor, end);
+
+          if (!openSet.contains(_Node(neighbor, f))) {
+            openSet.add(_Node(neighbor, f));
+          }
         }
       }
     }
 
-    return null; // No path found
+    return null;
   }
 
-  /// Reconstruct path from came_from map
+  /// Euclidean distance heuristic
+  double _heuristic(GridPoint a, GridPoint b) {
+    final dx = (a.col - b.col).toDouble();
+    final dy = (a.row - b.row).toDouble();
+    return sqrt(dx * dx + dy * dy);
+  }
+
+  /// Get valid neighbors (8-directional)
+  List<GridPoint> _getNeighbors(GridPoint p, GridModel grid) {
+    final neighbors = <GridPoint>[];
+    final moves = [
+      [-1, 0], [1, 0], [0, -1], [0, 1], // Cardinal
+      [-1, -1], [-1, 1], [1, -1], [1, 1], // Diagonal
+    ];
+
+    for (final move in moves) {
+      final nr = p.row + move[0];
+      final nc = p.col + move[1];
+
+      if (nr >= 0 && nr < grid.height && nc >= 0 && nc < grid.width) {
+        neighbors.add(GridPoint(nr, nc));
+      }
+    }
+
+    return neighbors;
+  }
+
+  /// Reconstruct path from A* result
   List<GridPoint> _reconstructPath(
     Map<GridPoint, GridPoint> cameFrom,
     GridPoint current,
   ) {
-    final path = [current];
+    final path = <GridPoint>[current];
     while (cameFrom.containsKey(current)) {
       current = cameFrom[current]!;
-      path.add(current);
+      path.insert(0, current);
     }
-    return path.reversed.toList();
+    return path;
   }
 
-  /// Smooth path by removing unnecessary waypoints
-  List<GridPoint> _smoothPath(List<GridPoint> path) {
+  /// Smooth path - remove unnecessary waypoints
+  List<GridPoint> _smoothPath(List<GridPoint> path, GridModel grid) {
     if (path.length <= 2) return path;
 
-    final smoothed = [path.first];
-    int currentIdx = 0;
-
-    while (currentIdx < path.length - 1) {
-      bool foundShortcut = false;
-
-      // Try to find furthest visible point
-      for (int checkIdx = path.length - 1; checkIdx > currentIdx; checkIdx--) {
-        if (_isLineClear(path[currentIdx], path[checkIdx])) {
-          smoothed.add(path[checkIdx]);
-          currentIdx = checkIdx;
-          foundShortcut = true;
-          break;
-        }
-      }
-
-      if (!foundShortcut) {
-        currentIdx++;
-        smoothed.add(path[currentIdx]);
-      }
-    }
-
-    return smoothed;
-  }
-
-  /// Check if line between two points is clear
-  bool _isLineClear(GridPoint start, GridPoint end) {
-    final r0 = start.row;
-    final c0 = start.col;
-    final r1 = end.row;
-    final c1 = end.col;
-
-    final steps = max((r1 - r0).abs(), (c1 - c0).abs()) * 2;
-    if (steps == 0) return true;
-
-    for (int i = 1; i <= steps; i++) {
-      final t = i / steps;
-      final r = (r0 + (r1 - r0) * t).round();
-      final c = (c0 + (c1 - c0) * t).round();
-
-      if (r < 0 || r >= rows || c < 0 || c >= cols) return false;
-      if (grid[r][c] == 1) return false;
-      if (distanceMap[r][c] < 1.05) return false;
-    }
-
-    return true;
-  }
-
-  /// Generate turn-by-turn directions
-  List<String> _generateDirections(List<GridPoint> path) {
-    if (path.length < 2) {
-      return ['No movement needed'];
-    }
-
-    final directions = <String>['Start at your current location'];
-
+    final smoothed = <GridPoint>[path.first];
     int i = 0;
+
     while (i < path.length - 1) {
-      final current = path[i];
-      final next = path[i + 1];
+      int farthest = i + 1;
 
-      final dr = next.row - current.row;
-      final dc = next.col - current.col;
-
-      // Count consecutive moves in same direction
-      int count = 1;
-      int j = i + 1;
-
-      while (j < path.length - 1) {
-        final nextDr = path[j + 1].row - path[j].row;
-        final nextDc = path[j + 1].col - path[j].col;
-
-        if (nextDr == dr && nextDc == dc) {
-          count++;
-          j++;
+      // Try to skip as many points as possible
+      for (int j = i + 2; j < path.length; j++) {
+        if (_hasLineOfSight(path[i], path[j], grid)) {
+          farthest = j;
         } else {
           break;
         }
       }
 
-      final direction = _getDirectionText(dr, dc);
-
-      if (count > 2) {
-        directions.add('Continue $direction for $count cells');
-      } else {
-        directions.add('Move $direction');
-      }
-
-      i = j;
+      smoothed.add(path[farthest]);
+      i = farthest;
     }
 
-    directions.add('You have arrived at your destination');
-
-    return directions;
+    return smoothed;
   }
 
-  /// Convert row/col delta to direction text
-  String _getDirectionText(int dr, int dc) {
-    if (dr == 0 && dc > 0) return 'east';
-    if (dr == 0 && dc < 0) return 'west';
-    if (dr > 0 && dc == 0) return 'south';
-    if (dr < 0 && dc == 0) return 'north';
-    if (dr < 0 && dc > 0) return 'northeast';
-    if (dr < 0 && dc < 0) return 'northwest';
-    if (dr > 0 && dc > 0) return 'southeast';
-    if (dr > 0 && dc < 0) return 'southwest';
-    return 'forward';
+  /// Check if there's clear line of sight (Bresenham's line algorithm)
+  bool _hasLineOfSight(GridPoint p1, GridPoint p2, GridModel grid) {
+    int x0 = p1.col;
+    int y0 = p1.row;
+    int x1 = p2.col;
+    int y1 = p2.row;
+
+    final dx = (x1 - x0).abs();
+    final dy = (y1 - y0).abs();
+    final sx = x0 < x1 ? 1 : -1;
+    final sy = y0 < y1 ? 1 : -1;
+    var err = dx - dy;
+
+    while (true) {
+      // Check if current position is a wall
+      if (grid.grid[y0][x0] == 1) return false;
+
+      if (x0 == x1 && y0 == y1) break;
+
+      final e2 = 2 * err;
+      if (e2 > -dy) {
+        err -= dy;
+        x0 += sx;
+      }
+      if (e2 < dx) {
+        err += dx;
+        y0 += sy;
+      }
+    }
+
+    return true;
   }
 
-  /// Calculate total path distance
-  double _calculateDistance(List<GridPoint> path, int cellSize) {
-    if (path.length < 2) return 0;
-
+  /// Calculate real-world distance
+  double _calculateRealDistance(List<GridPoint> path, int cellSize) {
     double totalDistance = 0;
 
     for (int i = 0; i < path.length - 1; i++) {
       final p1 = path[i];
       final p2 = path[i + 1];
 
-      final cellDistance = sqrt(
-        pow(p2.row - p1.row, 2) + pow(p2.col - p1.col, 2),
-      );
+      final dx = (p2.col - p1.col).toDouble();
+      final dy = (p2.row - p1.row).toDouble();
+      final cellDistance = sqrt(dx * dx + dy * dy);
 
-      final pixelDistance = cellDistance * cellSize;
-      totalDistance += pixelDistance;
+      // Convert cell distance to meters (1 cell ≈ 0.5 meters)
+      totalDistance += cellDistance * 0.5;
     }
 
-    // Convert pixels to meters (assume 0.5 meters per pixel)
-    return totalDistance * 0.5;
+    return totalDistance;
   }
-}
 
-// Helper classes
-class _Move {
-  final int dr;
-  final int dc;
-  final double baseCost;
+  /// Generate turn-by-turn directions
+  List<String> _generateDirections(List<GridPoint> path) {
+    if (path.length <= 1) return ['You have arrived'];
 
-  _Move(this.dr, this.dc, this.baseCost);
-}
+    final directions = <String>['Start at your current location'];
 
-class _Neighbor {
-  final GridPoint point;
-  final double cost;
+    // Generate direction for every ~10% of the path
+    final step = max(1, path.length ~/ 8);
 
-  _Neighbor(this.point, this.cost);
+    for (int i = step; i < path.length; i += step) {
+      final prev = path[max(0, i - step)];
+      final curr = path[i];
+
+      final dr = curr.row - prev.row;
+      final dc = curr.col - prev.col;
+
+      String dir = '';
+      if (dr < 0 && dc == 0)
+        dir = 'north';
+      else if (dr > 0 && dc == 0)
+        dir = 'south';
+      else if (dr == 0 && dc > 0)
+        dir = 'east';
+      else if (dr == 0 && dc < 0)
+        dir = 'west';
+      else if (dr < 0 && dc > 0)
+        dir = 'northeast';
+      else if (dr < 0 && dc < 0)
+        dir = 'northwest';
+      else if (dr > 0 && dc > 0)
+        dir = 'southeast';
+      else if (dr > 0 && dc < 0)
+        dir = 'southwest';
+
+      if (dir.isNotEmpty) {
+        directions.add('Move $dir');
+      }
+    }
+
+    directions.add('You have arrived at your destination');
+    return directions;
+  }
 }
 
 class _Node implements Comparable<_Node> {
   final GridPoint point;
-  final double fScore;
+  final double f;
 
-  _Node(this.point, this.fScore);
+  _Node(this.point, this.f);
 
   @override
-  int compareTo(_Node other) {
-    return fScore.compareTo(other.fScore);
-  }
+  int compareTo(_Node other) => f.compareTo(other.f);
+
+  @override
+  bool operator ==(Object other) => other is _Node && other.point == point;
+
+  @override
+  int get hashCode => point.hashCode;
 }
 
-// Simple priority queue
 class PriorityQueue<T extends Comparable> {
   final _items = <T>[];
 
@@ -381,10 +300,8 @@ class PriorityQueue<T extends Comparable> {
     _items.sort();
   }
 
-  T removeFirst() {
-    return _items.removeAt(0);
-  }
-
+  T removeFirst() => _items.removeAt(0);
   bool get isNotEmpty => _items.isNotEmpty;
   bool get isEmpty => _items.isEmpty;
+  bool contains(T item) => _items.contains(item);
 }
