@@ -165,7 +165,7 @@ class FloorplanService {
       // Process image
       final gridModel = await _gridProcessor.processImage(
         imageBytes: imageBytes,
-        cellSize: 20,
+        cellSize: 15,
       );
 
       print('✅ [PROCESSING] Grid generated successfully');

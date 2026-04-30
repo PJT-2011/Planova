@@ -76,7 +76,7 @@ class _FloorplanDetailScreenState extends State<FloorplanDetailScreen> {
   }
 
   Future<void> _startNavigation() async {
-    // Check if floorplan is ready
+    // To check if okay na yung floorplan
     if (widget.floorplan.status != 'ready') {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
