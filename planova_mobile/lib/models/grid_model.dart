@@ -90,3 +90,33 @@ class GridMetadata {
     );
   }
 }
+
+// ✅ ADDED: GridPoint class (was missing!)
+class GridPoint {
+  final int row;
+  final int col;
+
+  GridPoint({required this.row, required this.col});
+
+  @override
+  String toString() => 'GridPoint(row: $row, col: $col)';
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is GridPoint &&
+          runtimeType == other.runtimeType &&
+          row == other.row &&
+          col == other.col;
+
+  @override
+  int get hashCode => row.hashCode ^ col.hashCode;
+
+  Map<String, dynamic> toJson() {
+    return {'row': row, 'col': col};
+  }
+
+  factory GridPoint.fromJson(Map<String, dynamic> json) {
+    return GridPoint(row: json['row'] as int, col: json['col'] as int);
+  }
+}

@@ -8,56 +8,39 @@ import 'package:planova_mobile/models/grid_model.dart';
 class IndoorPositioningService {
   int _currentRouteIndex = 0;
   List<GridPoint>? _routePath;
-  double _currentHeading = 0;
   int _stepCount = 0;
+
+  StreamSubscription<AccelerometerEvent>? _accelSubscription;
+  StreamSubscription<CompassEvent>? _compassSubscription;
 
   double _lastMagnitude = 0;
   bool _stepPeakDetected = false;
   DateTime _lastStepTime = DateTime.now();
 
-  StreamSubscription<AccelerometerEvent>? _accelSubscription;
-  StreamSubscription<CompassEvent>? _compassSubscription;
+  // ✅ NEW: Stream controller for position updates
+  final StreamController<GridPoint> _positionController =
+      StreamController<GridPoint>.broadcast();
 
-  bool _isMoving = false;
-
-  final void Function(GridPoint position)? onPositionUpdate;
-  final void Function(double heading)? onHeadingUpdate;
-  final void Function(bool isMoving)? onMovementUpdate;
-
-  IndoorPositioningService({
-    this.onPositionUpdate,
-    this.onHeadingUpdate,
-    this.onMovementUpdate,
-  });
-
-  Future<void> initialize({
-    required GridPoint startPosition,
-    required GridModel grid,
-    required int cellSize,
-    List<GridPoint>? routePath,
-  }) async {
-    print('🔵 [POS] Initializing...');
-    print('   Start: $startPosition');
-    print('   Route points: ${routePath?.length ?? 0}');
+  Stream<GridPoint> startNavigation(RouteModel route) {
+    print('🔵 [POS] Starting navigation...');
+    print('   Route points: ${route.path.length}');
 
     _currentRouteIndex = 0;
-    _routePath = routePath;
+    _routePath = route.path;
     _stepCount = 0;
 
     _startSensors();
+
+    return _positionController.stream;
   }
 
   void _startSensors() {
     _accelSubscription = accelerometerEvents.listen((event) {
       _detectSteps(event);
-      _detectMovement(event);
     });
 
     _compassSubscription = FlutterCompass.events?.listen((event) {
-      if (event.heading != null) {
-        _currentHeading = event.heading!;
-        onHeadingUpdate?.call(_currentHeading);
-      }
+      // Compass data if needed
     });
 
     print('✅ [POS] Sensors started');
@@ -70,7 +53,7 @@ class IndoorPositioningService {
     final now = DateTime.now();
     final timeSinceLastStep = now.difference(_lastStepTime).inMilliseconds;
 
-    // CRITICAL: Very sensitive step detection
+    // Step detection
     if (magnitude > 13.5 && !_stepPeakDetected) {
       _stepPeakDetected = true;
     } else if (magnitude < 13.5 &&
@@ -87,25 +70,13 @@ class IndoorPositioningService {
     }
   }
 
-  void _detectMovement(AccelerometerEvent event) {
-    final magnitude = sqrt(
-      event.x * event.x + event.y * event.y + event.z * event.z,
-    );
-    final wasMoving = _isMoving;
-    _isMoving = magnitude > 11.0;
-
-    if (wasMoving != _isMoving) {
-      onMovementUpdate?.call(_isMoving);
-    }
-  }
-
   void _advanceAlongRoute() {
     if (_routePath == null || _routePath!.isEmpty) {
       print('⚠️ [POS] No route path');
       return;
     }
 
-    // CRITICAL: Move VERY SLOWLY - 8 steps per cell
+    // Move every 8 steps
     if (_stepCount % 8 == 0 && _currentRouteIndex < _routePath!.length - 1) {
       _currentRouteIndex++;
       final newPosition = _routePath![_currentRouteIndex];
@@ -116,22 +87,20 @@ class IndoorPositioningService {
         '📍 [POS] Moving to point $_currentRouteIndex/${_routePath!.length} ($progress%) - $newPosition',
       );
 
-      onPositionUpdate?.call(newPosition);
+      // Emit position update
+      _positionController.add(newPosition);
     }
   }
 
-  GridPoint? get currentPosition =>
-      _routePath != null && _currentRouteIndex < _routePath!.length
-      ? _routePath![_currentRouteIndex]
-      : null;
-
-  double get currentHeading => _currentHeading;
-  bool get isMoving => _isMoving;
-  int get totalSteps => _stepCount;
-
-  void dispose() {
+  void stopNavigation() {
     _accelSubscription?.cancel();
     _compassSubscription?.cancel();
+    print('🔵 [POS] Navigation stopped');
+  }
+
+  void dispose() {
+    stopNavigation();
+    _positionController.close();
     print('🔵 [POS] Disposed');
   }
 }

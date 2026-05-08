@@ -15,14 +15,43 @@ class PathfindingService {
     print('   Grid: ${gridModel.width}x${gridModel.height}');
     print('   Cell size: $cellSize px');
 
+    // ✅ FIRST: Check if start and end are walkable
+    if (gridModel.grid[start.row][start.col] == 1) {
+      print('❌ [PATH] Start point is on a wall!');
+      return null;
+    }
+
+    if (gridModel.grid[end.row][end.col] == 1) {
+      print('❌ [PATH] End point is on a wall!');
+      return null;
+    }
+
     final path = _astarOptimized(gridModel, start, end);
 
     if (path == null || path.isEmpty) {
       print('❌ [PATH] No path found');
+      print('   Start walkable: ${gridModel.grid[start.row][start.col] == 0}');
+      print('   End walkable: ${gridModel.grid[end.row][end.col] == 0}');
+
+      // ✅ Debug: Print nearby cells
+      print('   Cells around start:');
+      for (int dr = -1; dr <= 1; dr++) {
+        for (int dc = -1; dc <= 1; dc++) {
+          final r = start.row + dr;
+          final c = start.col + dc;
+          if (r >= 0 && r < gridModel.height && c >= 0 && c < gridModel.width) {
+            final isWall = gridModel.grid[r][c] == 1;
+            print('     ($r,$c): ${isWall ? "WALL" : "open"}');
+          }
+        }
+      }
+
       return null;
     }
 
     print('✅ [PATH] Found: ${path.length} waypoints');
+
+    // Rest of the method stays the same...
 
     // Calculate REAL distance
     // Assuming: floorplan represents ~20m x 20m space
@@ -121,20 +150,55 @@ class PathfindingService {
     return sqrt(dx * dx + dy * dy);
   }
 
-  /// Get valid neighbors (8-directional)
   List<GridPoint> _getNeighbors(GridPoint p, GridModel grid) {
     final neighbors = <GridPoint>[];
-    final moves = [
-      [-1, 0], [1, 0], [0, -1], [0, 1], // Cardinal
-      [-1, -1], [-1, 1], [1, -1], [1, 1], // Diagonal
+
+    // Cardinal directions (always safe)
+    final cardinalMoves = [
+      [-1, 0], // North
+      [1, 0], // South
+      [0, -1], // West
+      [0, 1], // East
     ];
 
-    for (final move in moves) {
+    // Add cardinal neighbors
+    for (final move in cardinalMoves) {
       final nr = p.row + move[0];
       final nc = p.col + move[1];
 
       if (nr >= 0 && nr < grid.height && nc >= 0 && nc < grid.width) {
-        neighbors.add(GridPoint(nr, nc));
+        // ✅ FIXED: Correct constructor
+        neighbors.add(GridPoint(row: nr, col: nc));
+      }
+    }
+
+    // ✅ DIAGONAL MOVEMENT: Only if BOTH adjacent cells are clear
+    final diagonalMoves = [
+      [-1, -1, -1, 0, 0, -1], // NW: check N and W
+      [-1, 1, -1, 0, 0, 1], // NE: check N and E
+      [1, -1, 1, 0, 0, -1], // SW: check S and W
+      [1, 1, 1, 0, 0, 1], // SE: check S and E
+    ];
+
+    for (final move in diagonalMoves) {
+      final nr = p.row + move[0];
+      final nc = p.col + move[1];
+
+      // Must be in bounds
+      if (nr < 0 || nr >= grid.height || nc < 0 || nc >= grid.width) {
+        continue;
+      }
+
+      // Check the two adjacent cells that form the corner
+      final check1Row = p.row + move[2];
+      final check1Col = p.col + move[3];
+      final check2Row = p.row + move[4];
+      final check2Col = p.col + move[5];
+
+      // Both adjacent cells must be walkable
+      if (grid.grid[check1Row][check1Col] == 0 &&
+          grid.grid[check2Row][check2Col] == 0) {
+        neighbors.add(GridPoint(row: nr, col: nc));
       }
     }
 

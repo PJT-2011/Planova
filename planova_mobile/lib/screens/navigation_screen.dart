@@ -1,15 +1,13 @@
-import 'dart:io';
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:planova_mobile/models/floorplan_model.dart';
-import 'package:planova_mobile/models/grid_model.dart';
+import 'package:planova_mobile/models/grid_model.dart'; // ✅ This imports GridPoint
 import 'package:planova_mobile/models/route_model.dart';
-import 'package:planova_mobile/services/mock_storage_service.dart';
 import 'package:planova_mobile/services/floorplan_service.dart';
 import 'package:planova_mobile/services/pathfinding_service.dart';
 import 'package:planova_mobile/services/indoor_positioning_service.dart';
+import 'package:planova_mobile/services/mock_storage_service.dart';
 
 class NavigationScreen extends StatefulWidget {
   final FloorplanModel floorplan;
@@ -20,205 +18,316 @@ class NavigationScreen extends StatefulWidget {
   State<NavigationScreen> createState() => _NavigationScreenState();
 }
 
-class _NavigationScreenState extends State<NavigationScreen>
-    with SingleTickerProviderStateMixin {
+class _NavigationScreenState extends State<NavigationScreen> {
   final FloorplanService _floorplanService = FloorplanService();
   final PathfindingService _pathfindingService = PathfindingService();
-  late IndoorPositioningService _positioningService;
+  final IndoorPositioningService _positioningService =
+      IndoorPositioningService();
 
+  GridModel? _gridModel;
   GridPoint? _startPoint;
   GridPoint? _endPoint;
-  bool _selectingStart = true;
   RouteModel? _route;
-  GridModel? _gridModel;
+  GridPoint? _currentPosition;
+
   bool _isLoading = true;
   bool _isCalculating = false;
   bool _isNavigating = false;
-  int _currentStepIndex = 0;
 
-  GridPoint? _currentPosition;
-  double _currentHeading = 0;
-  bool _isMoving = false;
+  StreamSubscription? _positionSubscription;
 
-  final TransformationController _transformationController =
-      TransformationController();
-  late AnimationController _animationController;
-  late Animation<double> _fadeAnimation;
-
-  Size? _imageSize;
+  // ✅ CRITICAL: Image display info for coordinate transformation
+  Size? _imageDisplaySize;
+  Offset? _imageDisplayOffset;
+  Size? _imageOriginalSize;
   final GlobalKey _imageKey = GlobalKey();
+  bool _boundsCalculated = false;
 
   @override
   void initState() {
     super.initState();
-    _loadGridData();
-    _requestPermissions();
+    _loadFloorplanData();
 
-    _animationController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 300),
-    );
-
-    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _animationController, curve: Curves.easeIn),
-    );
-
-    _positioningService = IndoorPositioningService(
-      onPositionUpdate: _onPositionUpdate,
-      onHeadingUpdate: _onHeadingUpdate,
-      onMovementUpdate: _onMovementUpdate,
-    );
+    // ✅ Calculate image bounds after first frame
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _calculateImageBounds();
+    });
   }
 
   @override
   void dispose() {
-    _positioningService.dispose();
-    _animationController.dispose();
-    _transformationController.dispose();
+    _positionSubscription?.cancel();
     super.dispose();
   }
 
-  Future<void> _requestPermissions() async {
-    await Permission.activityRecognition.request();
-    await Permission.location.request();
+  /// ✅ CRITICAL: Calculate ONCE and LOCK the bounds
+  void _calculateImageBounds() {
+    // ✅ PREVENT RECALCULATION!
+    if (_boundsCalculated) {
+      print('🔒 [NAV] Bounds already calculated, skipping');
+      return;
+    }
+
+    final RenderBox? renderBox =
+        _imageKey.currentContext?.findRenderObject() as RenderBox?;
+
+    if (renderBox == null || _gridModel == null) {
+      print('⚠️ [NAV] Cannot calculate bounds yet');
+      return;
+    }
+
+    final containerSize = renderBox.size;
+    final imageWidth = _gridModel!.metadata.imageWidth.toDouble();
+    final imageHeight = _gridModel!.metadata.imageHeight.toDouble();
+
+    // Calculate scale to fit image in container (BoxFit.contain logic)
+    final containerAspect = containerSize.width / containerSize.height;
+    final imageAspect = imageWidth / imageHeight;
+
+    double displayWidth;
+    double displayHeight;
+    double offsetX;
+    double offsetY;
+
+    if (containerAspect > imageAspect) {
+      // Container is wider - fit to height
+      displayHeight = containerSize.height;
+      displayWidth = displayHeight * imageAspect;
+      offsetX = (containerSize.width - displayWidth) / 2;
+      offsetY = 0;
+    } else {
+      // Container is taller - fit to width
+      displayWidth = containerSize.width;
+      displayHeight = displayWidth / imageAspect;
+      offsetX = 0;
+      offsetY = (containerSize.height - displayHeight) / 2;
+    }
+
+    setState(() {
+      _imageDisplaySize = Size(displayWidth, displayHeight);
+      _imageDisplayOffset = Offset(offsetX, offsetY);
+      _imageOriginalSize = Size(imageWidth, imageHeight);
+      _boundsCalculated = true; // ✅ LOCK IT!
+    });
+
+    print('✅🔒 [NAV] Image bounds LOCKED:');
+    print(
+      '   Container: ${containerSize.width.toInt()}x${containerSize.height.toInt()}',
+    );
+    print('   Original: ${imageWidth.toInt()}x${imageHeight.toInt()}');
+    print('   Display: ${displayWidth.toInt()}x${displayHeight.toInt()}');
+    print('   Offset: (${offsetX.toInt()}, ${offsetY.toInt()})');
   }
 
-  Future<void> _loadGridData() async {
+  Future<void> _loadFloorplanData() async {
     try {
-      final data = await _floorplanService.getFloorplanWithGrid(
-        widget.floorplan.floorplanId,
-      );
-
-      if (data != null && data['grid'] != null) {
-        setState(() {
-          _gridModel = data['grid'] as GridModel;
-          _isLoading = false;
-        });
-        print('✅ Grid: ${_gridModel!.width}x${_gridModel!.height}');
-      } else {
-        setState(() => _isLoading = false);
+      final processedData = widget.floorplan.processedData;
+      if (processedData == null) {
+        throw 'Floorplan not processed yet';
       }
 
-      WidgetsBinding.instance.addPostFrameCallback((_) => _getImageSize());
+      final gridModel = GridModel.fromJson(processedData);
+
+      setState(() {
+        _gridModel = gridModel;
+        _isLoading = false;
+      });
+
+      print('✅ [NAV] Grid loaded: ${gridModel.width}x${gridModel.height}');
+      print('✅ [NAV] Cell size: ${gridModel.cellSize}px');
+
+      // Bounds will be calculated by LayoutBuilder on first frame
+      print('🔵 [NAV] Waiting for layout to calculate bounds...');
     } catch (e) {
+      print('❌ [NAV] Error loading floorplan: $e');
       setState(() => _isLoading = false);
     }
   }
 
-  void _getImageSize() {
-    final RenderBox? renderBox =
-        _imageKey.currentContext?.findRenderObject() as RenderBox?;
-    if (renderBox != null) {
-      setState(() => _imageSize = renderBox.size);
-    }
-  }
-
+  /// ✅ CRITICAL: Convert screen tap to grid coordinates
   void _handleTapOnImage(TapDownDetails details) {
-    if (_gridModel == null || _imageSize == null) {
-      print('⚠️ Grid or image size not ready');
+    if (_gridModel == null) {
+      print('❌ [NAV] Grid not loaded');
       return;
     }
 
-    final localPosition = details.localPosition;
+    // ✅ FIX: Only calculate bounds if not already calculated
+    // DO NOT recalculate on every tap!
+    if (_imageDisplaySize == null ||
+        _imageDisplayOffset == null ||
+        _imageOriginalSize == null) {
+      print('⚠️ [NAV] Image bounds not ready, calculating now...');
+      _calculateImageBounds();
 
-    // CRITICAL FIX: Account for image scaling
-    final imageWidth = _gridModel!.metadata.imageWidth.toDouble();
-    final imageHeight = _gridModel!.metadata.imageHeight.toDouble();
-
-    // Calculate actual image display size (maintaining aspect ratio)
-    final screenWidth = _imageSize!.width;
-    final screenHeight = _imageSize!.height;
-
-    final imageAspect = imageWidth / imageHeight;
-    final screenAspect = screenWidth / screenHeight;
-
-    double displayWidth, displayHeight, offsetX, offsetY;
-
-    if (screenAspect > imageAspect) {
-      // Screen is wider - image fits to height
-      displayHeight = screenHeight;
-      displayWidth = imageWidth * (screenHeight / imageHeight);
-      offsetX = (screenWidth - displayWidth) / 2;
-      offsetY = 0;
-    } else {
-      // Screen is taller - image fits to width
-      displayWidth = screenWidth;
-      displayHeight = imageHeight * (screenWidth / imageWidth);
-      offsetX = 0;
-      offsetY = (screenHeight - displayHeight) / 2;
+      // If still null after calculation, wait for next frame
+      if (_imageDisplaySize == null) {
+        print('❌ [NAV] Image bounds calculation failed, try again');
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please wait for image to load completely'),
+            duration: Duration(seconds: 1),
+          ),
+        );
+        return;
+      }
     }
 
-    // Adjust tap position to image coordinates
-    final imageTapX =
-        (localPosition.dx - offsetX) * (imageWidth / displayWidth);
-    final imageTapY =
-        (localPosition.dy - offsetY) * (imageHeight / displayHeight);
-
-    // Convert to grid coordinates
-    final cellSize = _gridModel!.cellSize.toDouble();
-    final gridCol = (imageTapX / cellSize).floor();
-    final gridRow = (imageTapY / cellSize).floor();
+    // Step 1: Get tap position relative to container
+    final tapX = details.localPosition.dx;
+    final tapY = details.localPosition.dy;
 
     print(
-      '🔵 [TAP] Screen: (${localPosition.dx.toStringAsFixed(0)}, ${localPosition.dy.toStringAsFixed(0)})',
+      '🔵 [NAV] Raw tap: (${tapX.toStringAsFixed(1)}, ${tapY.toStringAsFixed(1)})',
+    );
+
+    // Step 2: Adjust for image offset (centering)
+    final adjustedX = tapX - _imageDisplayOffset!.dx;
+    final adjustedY = tapY - _imageDisplayOffset!.dy;
+
+    print(
+      '🔵 [NAV] Adjusted: (${adjustedX.toStringAsFixed(1)}, ${adjustedY.toStringAsFixed(1)})',
     );
     print(
-      '🔵 [TAP] Image: (${imageTapX.toStringAsFixed(0)}, ${imageTapY.toStringAsFixed(0)})',
+      '🔵 [NAV] Display size: ${_imageDisplaySize!.width.toStringAsFixed(1)}x${_imageDisplaySize!.height.toStringAsFixed(1)}',
     );
-    print('🔵 [TAP] Grid: ($gridRow, $gridCol)');
+    print(
+      '🔵 [NAV] Offset: (${_imageDisplayOffset!.dx.toStringAsFixed(1)}, ${_imageDisplayOffset!.dy.toStringAsFixed(1)})',
+    );
 
-    // Validate grid position
-    if (gridRow < 0 ||
-        gridRow >= _gridModel!.height ||
-        gridCol < 0 ||
-        gridCol >= _gridModel!.width) {
-      print('❌ [TAP] Outside grid bounds');
+    // Step 3: Check if tap is within displayed image
+    if (adjustedX < 0 ||
+        adjustedX > _imageDisplaySize!.width ||
+        adjustedY < 0 ||
+        adjustedY > _imageDisplaySize!.height) {
+      print('❌ [NAV] Tap outside image bounds');
+      print('   Adjusted: ($adjustedX, $adjustedY)');
+      print(
+        '   Image size: ${_imageDisplaySize!.width}x${_imageDisplaySize!.height}',
+      );
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Outside floorplan'),
+          content: Text('Please tap inside the floorplan'),
           backgroundColor: Colors.orange,
+          duration: Duration(seconds: 1),
         ),
       );
       return;
     }
 
-    // Check if wall
-    if (_gridModel!.grid[gridRow][gridCol] == 1) {
-      print('❌ [TAP] Wall detected at ($gridRow, $gridCol)');
+    // Step 4: Scale to original image coordinates
+    final scaleX = _imageOriginalSize!.width / _imageDisplaySize!.width;
+    final scaleY = _imageOriginalSize!.height / _imageDisplaySize!.height;
+
+    final imageX = adjustedX * scaleX;
+    final imageY = adjustedY * scaleY;
+
+    print(
+      '🔵 [NAV] Image coords: (${imageX.toStringAsFixed(1)}, ${imageY.toStringAsFixed(1)})',
+    );
+    print(
+      '🔵 [NAV] Scale: (${scaleX.toStringAsFixed(2)}, ${scaleY.toStringAsFixed(2)})',
+    );
+
+    // Step 5: Convert to grid cell
+    final cellSize = _gridModel!.cellSize;
+    final col = (imageX / cellSize).floor();
+    final row = (imageY / cellSize).floor();
+
+    print('🔵 [NAV] Grid cell: row=$row, col=$col (cellSize=$cellSize)');
+
+    // Step 6: Validate grid bounds
+    if (col < 0 ||
+        col >= _gridModel!.width ||
+        row < 0 ||
+        row >= _gridModel!.height) {
+      print('❌ [NAV] Outside grid bounds');
+      print('   Cell: ($col, $row)');
+      print('   Grid: ${_gridModel!.width}x${_gridModel!.height}');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Outside floorplan grid'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 1),
+        ),
+      );
+      return;
+    }
+
+    final gridPoint = GridPoint(row: row, col: col);
+
+    // Step 7: Check if walkable
+    if (_gridModel!.grid[row][col] == 1) {
+      print('❌ [NAV] Cannot select wall at ($col, $row)');
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Cannot select wall'),
           backgroundColor: Colors.orange,
+          duration: Duration(seconds: 1),
         ),
       );
       return;
     }
 
-    final gridPoint = GridPoint(gridRow, gridCol);
-    print('✅ [TAP] Valid point: $gridPoint');
+    print('✅ [NAV] Valid selection: $gridPoint');
 
+    // Step 8: Set start or end point
     setState(() {
-      if (_selectingStart) {
+      if (_startPoint == null) {
         _startPoint = gridPoint;
-        _selectingStart = false;
-        _route = null;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('✅ Start selected'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      } else {
+        print('✅ [NAV] Start point set: $gridPoint');
+      } else if (_endPoint == null) {
         _endPoint = gridPoint;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Calculating...'),
-            backgroundColor: Colors.blue,
-          ),
-        );
+        print('✅ [NAV] End point set: $gridPoint');
         _calculateRoute();
+      } else {
+        // Reset and set new start
+        _startPoint = gridPoint;
+        _endPoint = null;
+        _route = null;
+        print('✅ [NAV] Reset - new start: $gridPoint');
       }
     });
+  }
+
+  /// ✅ Convert grid coordinates to screen coordinates for marker display
+  double _getScreenX(int col) {
+    if (_imageDisplaySize == null ||
+        _imageDisplayOffset == null ||
+        _imageOriginalSize == null) {
+      return 0;
+    }
+
+    final cellSize = _gridModel!.cellSize;
+
+    // Cell center in original image
+    final imageX = (col + 0.5) * cellSize;
+
+    // Scale to display size
+    final scaleX = _imageDisplaySize!.width / _imageOriginalSize!.width;
+    final displayX = imageX * scaleX;
+
+    // Add offset
+    return displayX + _imageDisplayOffset!.dx;
+  }
+
+  double _getScreenY(int row) {
+    if (_imageDisplaySize == null ||
+        _imageDisplayOffset == null ||
+        _imageOriginalSize == null) {
+      return 0;
+    }
+
+    final cellSize = _gridModel!.cellSize;
+
+    // Cell center in original image
+    final imageY = (row + 0.5) * cellSize;
+
+    // Scale to display size
+    final scaleY = _imageDisplaySize!.height / _imageOriginalSize!.height;
+    final displayY = imageY * scaleY;
+
+    // Add offset
+    return displayY + _imageDisplayOffset!.dy;
   }
 
   Future<void> _calculateRoute() async {
@@ -242,400 +351,65 @@ class _NavigationScreenState extends State<NavigationScreen>
         _startNavigationMode();
       } else {
         setState(() => _isCalculating = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('No path found'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('No path found')));
       }
     } catch (e) {
       setState(() => _isCalculating = false);
+      print('Error calculating route: $e');
     }
   }
 
-  Future<void> _startNavigationMode() async {
-    if (_startPoint == null || _gridModel == null || _route == null) return;
-
-    await _positioningService.initialize(
-      startPosition: _startPoint!,
-      grid: _gridModel!,
-      cellSize: _gridModel!.cellSize,
-      routePath: _route!.path,
-    );
+  void _startNavigationMode() {
+    if (_route == null || _startPoint == null) return;
 
     setState(() {
       _isNavigating = true;
       _currentPosition = _startPoint;
-      _currentStepIndex = 0;
     });
 
-    _animationController.forward();
-  }
+    _positionSubscription = _positioningService.startNavigation(_route!).listen(
+      (position) {
+        setState(() {
+          _currentPosition = position;
+        });
 
-  void _onPositionUpdate(GridPoint newPosition) {
-    if (!mounted) return;
-
-    setState(() => _currentPosition = newPosition);
-
-    if (_endPoint != null && newPosition == _endPoint) {
-      _onArrival();
-      return;
-    }
-
-    _updateCurrentInstruction();
-  }
-
-  void _onHeadingUpdate(double heading) {
-    if (!mounted) return;
-    setState(() => _currentHeading = heading);
-  }
-
-  void _onMovementUpdate(bool isMoving) {
-    if (!mounted) return;
-    setState(() => _isMoving = isMoving);
-  }
-
-  void _updateCurrentInstruction() {
-    if (_route == null || _currentPosition == null) return;
-
-    final totalPath = _route!.path.length;
-    int closestIndex = 0;
-    double minDist = double.infinity;
-
-    for (int i = 0; i < _route!.path.length; i++) {
-      final dist = _currentPosition!.distanceTo(_route!.path[i]);
-      if (dist < minDist) {
-        minDist = dist;
-        closestIndex = i;
-      }
-    }
-
-    final newStepIndex =
-        ((closestIndex / totalPath) * _route!.directions.length).floor().clamp(
-          0,
-          _route!.directions.length - 1,
-        );
-
-    if (newStepIndex != _currentStepIndex) {
-      setState(() => _currentStepIndex = newStepIndex);
-    }
-  }
-
-  void _onArrival() {
-    _positioningService.dispose();
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text('🎉 Arrived!'),
-        content: const Text('You have reached your destination.'),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              Navigator.pop(context);
-            },
-            child: const Text('OK'),
-          ),
-        ],
-      ),
+        if (position == _endPoint) {
+          _stopNavigation();
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('🎉 Destination reached!'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      },
     );
   }
 
-  void _resetNavigation() {
-    _positioningService.dispose();
+  void _stopNavigation() {
+    _positionSubscription?.cancel();
+    _positioningService.stopNavigation();
     setState(() {
-      _startPoint = null;
-      _endPoint = null;
-      _selectingStart = true;
-      _route = null;
       _isNavigating = false;
-      _currentStepIndex = 0;
       _currentPosition = null;
     });
   }
 
+  void _resetSelection() {
+    setState(() {
+      _startPoint = null;
+      _endPoint = null;
+      _route = null;
+      _currentPosition = null;
+      // ✅ Keep bounds locked! Don't reset _boundsCalculated
+    });
+    _stopNavigation();
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
-      return Scaffold(
-        appBar: AppBar(title: Text(widget.floorplan.buildingName)),
-        body: const Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    if (_gridModel == null) {
-      return Scaffold(
-        appBar: AppBar(title: Text(widget.floorplan.buildingName)),
-        body: const Center(child: Text('Not processed')),
-      );
-    }
-
-    if (_route != null && _isNavigating && _currentPosition != null) {
-      return _buildNavigationMode();
-    }
-
-    return _buildSelectionMode();
-  }
-
-  Widget _buildNavigationMode() {
-    if (_route == null || _currentPosition == null) return const SizedBox();
-
-    final currentDirection = _route!.directions[_currentStepIndex];
-    final remainingDistance = _route!.distance;
-    final remainingTime = _route!.estimatedTime;
-
-    return Scaffold(
-      body: Stack(
-        children: [
-          Positioned.fill(
-            child: InteractiveViewer(
-              transformationController: _transformationController,
-              minScale: 0.5,
-              maxScale: 4.0,
-              child: Container(
-                color: Colors.grey[200],
-                child: Stack(
-                  children: [
-                    Center(child: _buildFloorplanImage()),
-                    CustomPaint(
-                      size: Size.infinite,
-                      painter: RoutePainter(
-                        path: _route!.path,
-                        cellSize: _gridModel!.cellSize,
-                        currentPosition: _currentPosition!,
-                      ),
-                    ),
-                    Positioned(
-                      left:
-                          _currentPosition!.col *
-                              _gridModel!.cellSize.toDouble() -
-                          20,
-                      top:
-                          _currentPosition!.row *
-                              _gridModel!.cellSize.toDouble() -
-                          20,
-                      child: Transform.rotate(
-                        angle: _currentHeading * (pi / 180),
-                        child: Container(
-                          width: 40,
-                          height: 40,
-                          decoration: BoxDecoration(
-                            color: Colors.blue,
-                            shape: BoxShape.circle,
-                            border: Border.all(color: Colors.white, width: 4),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.blue.withOpacity(0.5),
-                                blurRadius: 15,
-                                spreadRadius: 3,
-                              ),
-                            ],
-                          ),
-                          child: const Icon(
-                            Icons.navigation,
-                            color: Colors.white,
-                            size: 20,
-                          ),
-                        ),
-                      ),
-                    ),
-                    if (_endPoint != null)
-                      Positioned(
-                        left:
-                            _endPoint!.col * _gridModel!.cellSize.toDouble() -
-                            20,
-                        top:
-                            _endPoint!.row * _gridModel!.cellSize.toDouble() -
-                            40,
-                        child: const Icon(
-                          Icons.location_on,
-                          color: Colors.red,
-                          size: 40,
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          Positioned(
-            top: 60,
-            left: 16,
-            right: 16,
-            child: FadeTransition(
-              opacity: _fadeAnimation,
-              child: Container(
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1E5E5C),
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.3),
-                      blurRadius: 20,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: const BoxDecoration(
-                        color: Colors.white24,
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(
-                        _getDirectionIcon(currentDirection),
-                        color: Colors.white,
-                        size: 32,
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            currentDirection,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 18,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Row(
-                            children: [
-                              Icon(
-                                _isMoving
-                                    ? Icons.directions_walk
-                                    : Icons.do_not_step,
-                                color: Colors.white70,
-                                size: 16,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                _isMoving ? 'Walking...' : 'Standing still',
-                                style: const TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(24),
-                  topRight: Radius.circular(24),
-                ),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: Colors.grey[300],
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '${remainingTime ~/ 60} min',
-                              style: TextStyle(
-                                fontSize: 32,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.red[600],
-                              ),
-                            ),
-                            Text(
-                              '${remainingDistance.toStringAsFixed(0)} m',
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: Colors.grey[600],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      ElevatedButton(
-                        onPressed: () => Navigator.pop(context),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.red[600],
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 24,
-                            vertical: 16,
-                          ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(24),
-                          ),
-                        ),
-                        child: const Text(
-                          'Exit',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Icon(Icons.sensors, color: Colors.green[600], size: 16),
-                      const SizedBox(width: 8),
-                      Text(
-                        'Steps: ${_positioningService.totalSteps}',
-                        style: TextStyle(color: Colors.grey[600], fontSize: 12),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  IconData _getDirectionIcon(String direction) {
-    if (direction.contains('Start')) return Icons.my_location;
-    if (direction.contains('arrived')) return Icons.location_on;
-    if (direction.contains('north')) return Icons.arrow_upward;
-    if (direction.contains('south')) return Icons.arrow_downward;
-    if (direction.contains('east')) return Icons.arrow_forward;
-    if (direction.contains('west')) return Icons.arrow_back;
-    return Icons.straight;
-  }
-
-  Widget _buildSelectionMode() {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.floorplan.buildingName),
@@ -643,66 +417,194 @@ class _NavigationScreenState extends State<NavigationScreen>
           if (_startPoint != null || _endPoint != null)
             IconButton(
               icon: const Icon(Icons.refresh),
-              onPressed: _resetNavigation,
+              onPressed: _resetSelection,
+              tooltip: 'Reset',
             ),
         ],
       ),
-      body: Column(
-        children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(16),
-            color: _selectingStart ? Colors.green[50] : Colors.red[50],
-            child: Text(
-              _selectingStart ? 'Tap START location' : 'Tap DESTINATION',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                color: _selectingStart ? Colors.green[900] : Colors.red[900],
-              ),
-            ),
-          ),
-          Expanded(
-            child: _isCalculating
-                ? const Center(child: CircularProgressIndicator())
-                : GestureDetector(
-                    onTapDown: _handleTapOnImage,
-                    child: Container(
-                      color: Colors.grey[200],
-                      child: Stack(
-                        children: [
-                          Center(child: _buildFloorplanImage()),
-                          if (_startPoint != null && _gridModel != null)
-                            Positioned(
-                              left:
-                                  _startPoint!.col *
-                                      _gridModel!.cellSize.toDouble() -
-                                  25,
-                              top:
-                                  _startPoint!.row *
-                                      _gridModel!.cellSize.toDouble() -
-                                  50,
-                              child: _buildMarker('S', Colors.green),
-                            ),
-                          if (_endPoint != null && _gridModel != null)
-                            Positioned(
-                              left:
-                                  _endPoint!.col *
-                                      _gridModel!.cellSize.toDouble() -
-                                  25,
-                              top:
-                                  _endPoint!.row *
-                                      _gridModel!.cellSize.toDouble() -
-                                  50,
-                              child: _buildMarker('E', Colors.red),
-                            ),
-                        ],
-                      ),
-                    ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : Column(
+              children: [
+                // Map view
+                // Map view - FIXED HEIGHT to prevent shifting
+                Expanded(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      // ✅ Calculate bounds on first layout
+                      if (!_boundsCalculated && _gridModel != null) {
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          _calculateImageBounds();
+                        });
+                      }
+
+                      return GestureDetector(
+                        onTapDown: _isNavigating ? null : _handleTapOnImage,
+                        child: Container(
+                          key: _imageKey,
+                          width: constraints.maxWidth,
+                          height: constraints.maxHeight,
+                          color: Colors.grey[200],
+                          child: Stack(
+                            children: [
+                              // Floorplan image - CENTERED and FIXED
+                              Positioned(
+                                left: _imageDisplayOffset?.dx ?? 0,
+                                top: _imageDisplayOffset?.dy ?? 0,
+                                width: _imageDisplaySize?.width,
+                                height: _imageDisplaySize?.height,
+                                child: _buildFloorplanImage(),
+                              ),
+
+                              // Route path
+                              if (_route != null && _imageDisplaySize != null)
+                                CustomPaint(
+                                  painter: RoutePainter(
+                                    route: _route!,
+                                    getScreenX: _getScreenX,
+                                    getScreenY: _getScreenY,
+                                  ),
+                                  size: Size.infinite,
+                                ),
+
+                              // Start marker
+                              if (_startPoint != null &&
+                                  _imageDisplaySize != null)
+                                Positioned(
+                                  left: _getScreenX(_startPoint!.col) - 20,
+                                  top: _getScreenY(_startPoint!.row) - 40,
+                                  child: const Icon(
+                                    Icons.location_on,
+                                    color: Colors.green,
+                                    size: 40,
+                                  ),
+                                ),
+
+                              // End marker
+                              if (_endPoint != null &&
+                                  _imageDisplaySize != null)
+                                Positioned(
+                                  left: _getScreenX(_endPoint!.col) - 20,
+                                  top: _getScreenY(_endPoint!.row) - 40,
+                                  child: const Icon(
+                                    Icons.location_on,
+                                    color: Colors.red,
+                                    size: 40,
+                                  ),
+                                ),
+
+                              // Current position marker
+                              if (_currentPosition != null &&
+                                  _imageDisplaySize != null)
+                                Positioned(
+                                  left: _getScreenX(_currentPosition!.col) - 15,
+                                  top: _getScreenY(_currentPosition!.row) - 15,
+                                  child: Container(
+                                    width: 30,
+                                    height: 30,
+                                    decoration: BoxDecoration(
+                                      color: Colors.blue,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: Colors.white,
+                                        width: 3,
+                                      ),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withOpacity(0.3),
+                                          blurRadius: 4,
+                                          offset: const Offset(0, 2),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
                   ),
-          ),
-        ],
-      ),
+                ),
+
+                // Bottom info panel
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 10,
+                        offset: const Offset(0, -5),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_route != null) ...[
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceAround,
+                          children: [
+                            _buildInfoCard(
+                              icon: Icons.straighten,
+                              label: 'Distance',
+                              value: '${_route!.distance.toStringAsFixed(1)}m',
+                            ),
+                            _buildInfoCard(
+                              icon: Icons.access_time,
+                              label: 'Time',
+                              value:
+                                  '${(_route!.estimatedTime / 60).toStringAsFixed(1)}min',
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+
+                      if (_isCalculating)
+                        const CircularProgressIndicator()
+                      else if (_startPoint == null)
+                        const Text(
+                          'Tap to select start point',
+                          style: TextStyle(fontSize: 16, color: Colors.grey),
+                        )
+                      else if (_endPoint == null)
+                        const Text(
+                          'Tap to select destination',
+                          style: TextStyle(fontSize: 16, color: Colors.grey),
+                        )
+                      else if (!_isNavigating)
+                        ElevatedButton.icon(
+                          onPressed: _startNavigationMode,
+                          icon: const Icon(Icons.navigation),
+                          label: const Text('Start Navigation'),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 32,
+                              vertical: 16,
+                            ),
+                          ),
+                        )
+                      else
+                        ElevatedButton.icon(
+                          onPressed: _stopNavigation,
+                          icon: const Icon(Icons.stop),
+                          label: const Text('Stop Navigation'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.red,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 32,
+                              vertical: 16,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
     );
   }
 
@@ -712,94 +614,91 @@ class _NavigationScreenState extends State<NavigationScreen>
     if (MockStorageService.isMockUrl(imageUrl)) {
       final mockStorage = MockStorageService();
       final localFile = mockStorage.getLocalFile(imageUrl);
-      return Image.file(localFile, key: _imageKey, fit: BoxFit.contain);
+
+      return Image.file(
+        localFile,
+        fit: BoxFit.contain,
+        errorBuilder: (context, error, stackTrace) {
+          return const Center(child: Text('Failed to load image'));
+        },
+      );
     } else {
-      return Image.network(imageUrl, key: _imageKey, fit: BoxFit.contain);
+      return Image.network(
+        imageUrl,
+        fit: BoxFit.contain,
+        loadingBuilder: (context, child, loadingProgress) {
+          if (loadingProgress == null) return child;
+          return const Center(child: CircularProgressIndicator());
+        },
+        errorBuilder: (context, error, stackTrace) {
+          return const Center(child: Text('Failed to load image'));
+        },
+      );
     }
   }
 
-  Widget _buildMarker(String label, Color color) {
-    return Column(
-      children: [
-        Container(
-          width: 50,
-          height: 50,
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.white, width: 3),
+  Widget _buildInfoCard({
+    required IconData icon,
+    required String label,
+    required String value,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.blue.shade50,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: Colors.blue),
+          const SizedBox(height: 8),
+          Text(
+            value,
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
           ),
-          child: Center(
-            child: Text(
-              label,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 24,
-              ),
-            ),
-          ),
-        ),
-      ],
+          Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+        ],
+      ),
     );
   }
 }
 
 class RoutePainter extends CustomPainter {
-  final List<GridPoint> path;
-  final int cellSize;
-  final GridPoint currentPosition;
+  final RouteModel route;
+  final double Function(int) getScreenX;
+  final double Function(int) getScreenY;
 
   RoutePainter({
-    required this.path,
-    required this.cellSize,
-    required this.currentPosition,
+    required this.route,
+    required this.getScreenX,
+    required this.getScreenY,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (path.length < 2) return;
+    final paint = Paint()
+      ..color = Colors.blue.withOpacity(0.6)
+      ..strokeWidth = 4
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
 
-    int currentIndex = 0;
-    for (int i = 0; i < path.length; i++) {
-      if (path[i] == currentPosition) {
-        currentIndex = i;
-        break;
+    final path = Path();
+
+    for (int i = 0; i < route.path.length; i++) {
+      final point = route.path[i];
+      final x = getScreenX(point.col);
+      final y = getScreenY(point.row);
+
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
       }
     }
 
-    final completedPaint = Paint()
-      ..color = Colors.grey[400]!
-      ..strokeWidth = 6
-      ..strokeCap = StrokeCap.round;
-
-    final remainingPaint = Paint()
-      ..color = const Color(0xFF4285F4)
-      ..strokeWidth = 6
-      ..strokeCap = StrokeCap.round;
-
-    for (int i = 0; i < path.length - 1; i++) {
-      final p1 = path[i];
-      final p2 = path[i + 1];
-
-      final offset1 = Offset(
-        p1.col * cellSize.toDouble() + cellSize / 2,
-        p1.row * cellSize.toDouble() + cellSize / 2,
-      );
-
-      final offset2 = Offset(
-        p2.col * cellSize.toDouble() + cellSize / 2,
-        p2.row * cellSize.toDouble() + cellSize / 2,
-      );
-
-      canvas.drawLine(
-        offset1,
-        offset2,
-        i < currentIndex ? completedPaint : remainingPaint,
-      );
-    }
+    canvas.drawPath(path, paint);
   }
 
   @override
-  bool shouldRepaint(RoutePainter oldDelegate) => true;
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }

@@ -14,6 +14,8 @@ void main() async {
     print('❌ Firebase initialization error: $e');
   }
 
+  print('🔵 Running in LOCAL MODE (Firebase disabled)');
+
   runApp(const PlanovaApp());
 }
 
@@ -51,18 +53,21 @@ class _SplashScreenState extends State<SplashScreen> {
     // Wait 2 seconds to show splash
     await Future.delayed(const Duration(seconds: 2));
 
-    // Check if user is logged in
-    final user = _authService.currentUser;
+    if (mounted) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const HomeScreen()),
+      );
+    }
 
+    final user = _authService.currentUser;
     if (mounted) {
       if (user != null) {
-        // User is logged in, go to home
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (context) => const HomeScreen()),
         );
       } else {
-        // User not logged in, go to login
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (context) => const LoginScreen()),
@@ -93,6 +98,11 @@ class _SplashScreenState extends State<SplashScreen> {
             Text(
               'Indoor Navigation Made Easy',
               style: TextStyle(fontSize: 16, color: Colors.white70),
+            ),
+            SizedBox(height: 20),
+            Text(
+              '🔧 LOCAL MODE',
+              style: TextStyle(fontSize: 14, color: Colors.orange),
             ),
             SizedBox(height: 40),
             CircularProgressIndicator(
