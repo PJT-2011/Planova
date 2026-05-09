@@ -7,12 +7,12 @@ import 'package:planova_mobile/models/grid_model.dart';
 ///
 /// Pipeline:
 ///   1. Grayscale
-///   2. Background detection (interior sampling — skips image frame artifacts)
-///   3. Normalization (invert if dark background)
-///   4. Threshold (mode-relative for gray-floor images, Otsu for white-bg)
-///   5. Grid cell classification
-///   6. Measure wall thickness → adaptive dilation (0 or 1 iteration)
-///   7. Remove isolated wall cells (door arcs, noise)
+///   2. Background detection  (interior sampling — skips image frame artifacts)
+///   3. Normalization         (invert if dark background)
+///   4. Threshold             (mode-relative for gray-floor, Otsu for white-bg)
+///   5. Grid classification   (two-tier: ratio + spanning-line for thin walls)
+///   6. Adaptive dilation     (0 iterations for thin/thick, 1 for medium walls)
+///   7. Remove isolated cells (door arcs, edge-bleed, noise)
 ///   8. Border enforcement
 class GridProcessor {
   Future<GridModel> processImage({
@@ -32,26 +32,26 @@ class GridProcessor {
 
     // ── Stage 2: Background detection ────────────────────────────────────
     // Sample interior corners (skip outer 15px) to avoid dark image-frame
-    // artifacts that fool naive corner sampling (e.g. Office floorplan).
+    // artifacts. e.g. the Office floorplan has a near-black frame border
+    // in the outermost ~12px rows that is NOT part of the floorplan.
+    // Naive corner sampling returns ~15 (dark), causing full inversion and
+    // the gray floor (~236) being classified as walls.
     final bgValue = _detectBackground(grayscale);
-    print('✅ [GRID] Stage 2: Background = $bgValue');
+    print('✅ [GRID] Stage 2: Background = ${bgValue.toStringAsFixed(0)}');
 
-    // ── Stage 3: Normalize so background is always white ─────────────────
-    // If background is dark (inverted/dark-theme image), invert pixel values.
+    // ── Stage 3: Normalize ────────────────────────────────────────────────
     final normalized = bgValue < 150 ? _invertImage(grayscale) : grayscale;
-    final normalizedBg = bgValue < 150
-        ? _detectBackground(normalized)
-        : bgValue.toDouble();
-    print(
-      '✅ [GRID] Stage 3: Normalized bg = ${normalizedBg.toStringAsFixed(0)}',
-    );
+    print('✅ [GRID] Stage 3: Normalized (inverted=${bgValue < 150})');
 
     // ── Stage 4: Threshold ────────────────────────────────────────────────
     // Find the most common pixel value (mode) = floor/background color.
-    // For pure-white backgrounds (mode ≥ 245): Otsu is accurate.
-    // For gray-floor images (mode < 245, e.g. Office floor at ~236):
-    //   Otsu splits gray-floor from white exterior, marking floor as walls.
-    //   Fix: use (mode − 80) so only truly dark wall pixels are detected.
+    //
+    // White background (mode ≥ 245): Otsu is accurate.
+    //
+    // Gray-floor images (mode < 245, e.g. Office floor ~236):
+    //   Otsu splits gray-floor from white exterior, marking the walkable
+    //   floor as walls. Fix: use (mode − 80) so only truly dark pixels
+    //   (actual ink/walls) are detected, not the gray floor fill.
     final modeValue = _findMode(normalized);
     final int threshold;
     if (modeValue >= 245) {
@@ -64,7 +64,37 @@ class GridProcessor {
       );
     }
 
-    // ── Stage 5: Build grid ───────────────────────────────────────────────
+    // ── Stage 5: Measure wall thickness ──────────────────────────────────
+    // Determines which detection tier and dilation strategy to use.
+    //
+    // Thin walls  (< 0.20 cell fraction, e.g. 2px / 15px = 0.13):
+    //   → Two-tier detection + no dilation
+    //   A 2px wall only covers 13.3% of a 15px cell — mathematically
+    //   impossible to detect at a 0.20 ratio threshold alone.
+    //   Tier 2 uses spanning-line detection for these cells.
+    //   No dilation: line-detection already adds enough wall cells,
+    //   and dilation on top causes furniture lines to bloat into walls.
+    //
+    // Medium walls (0.20–0.40 cell fraction, e.g. 4px / 15px = 0.27):
+    //   → Ratio detection + 1 dilation iteration
+    //
+    // Thick walls  (> 0.40 cell fraction, e.g. 10px / 15px = 0.67):
+    //   → Ratio detection + no dilation
+    //   Dilating thick walls was the root cause of sealed-off rooms and
+    //   blocked doorways in the High Contrast floorplan.
+    final medianWallPx = _measureMedianWallThickness(normalized, threshold);
+    final wallCellFraction = medianWallPx / cellSize;
+    final isThin = wallCellFraction < 0.20;
+    final isThick = wallCellFraction > 0.40;
+    final dilationIterations = (isThin || isThick) ? 0 : 1;
+
+    print(
+      '✅ [GRID] Stage 5: Wall = ${medianWallPx.toStringAsFixed(1)}px'
+      ' (${(wallCellFraction * 100).toStringAsFixed(0)}% of cell)'
+      ' → thin=$isThin thick=$isThick dilation=$dilationIterations',
+    );
+
+    // ── Stage 6: Build grid (two-tier detection) ──────────────────────────
     final width = (image.width / cellSize).ceil();
     final height = (image.height / cellSize).ceil();
     print('🔵 [GRID] Grid size: ${width}x$height');
@@ -75,54 +105,66 @@ class GridProcessor {
       for (int col = 0; col < width; col++) {
         final startX = col * cellSize;
         final startY = row * cellSize;
-        if (_isCellWall(normalized, startX, startY, cellSize, threshold)) {
+
+        final ratio = _cellDarkRatio(
+          normalized,
+          startX,
+          startY,
+          cellSize,
+          threshold,
+        );
+
+        if (ratio > 0.20) {
+          // Tier 1: High ratio → definitely a wall
           grid[row][col] = 1;
+        } else if (ratio > 0.04 && isThin) {
+          // Tier 2 (thin-wall images only):
+          // Low ratio but check for a continuous dark line that SPANS
+          // at least 40% of the cell dimension.
+          //
+          // WHY spanning matters: door-gap cells often have 4–6 dark
+          // pixels at their top or left edge — bleed-over from the wall
+          // immediately above/beside them. The old has_line() check
+          // (min_run=3) flagged these as walls, blocking doorways.
+          //
+          // A real 2px wall crossing a 15px cell spans 100% of the cell.
+          // An edge-bleed spans only ~27% (4px of 15px) → rejected.
+          if (_hasSpanningLine(
+            normalized,
+            startX,
+            startY,
+            cellSize,
+            threshold,
+            minRun: 3,
+            minSpanRatio: 0.40,
+          )) {
+            grid[row][col] = 1;
+          }
         }
       }
     }
 
     final rawWallPct = _wallPercent(grid, width, height);
-    print('✅ [GRID] Stage 5: Raw walls = ${rawWallPct.toStringAsFixed(1)}%');
+    print('✅ [GRID] Stage 6: Raw walls = ${rawWallPct.toStringAsFixed(1)}%');
 
-    // ── Stage 6: Adaptive dilation ────────────────────────────────────────
-    // Measure the median wall thickness in pixels, then decide how many
-    // dilation iterations are needed based on wall-to-cell-size ratio.
-    //
-    // Key insight validated by simulation:
-    //   • Thin walls (2px / 15px cell = 0.13 ratio) → need 1 dilation
-    //   • Thick walls (10px / 15px cell = 0.67 ratio) → need 0 dilation
-    //     (dilating thick walls was the root cause of sealed-off rooms
-    //      and blocked doorways in the High Contrast floorplan)
-    //
-    // Threshold: if wall occupies >40% of a cell already, skip dilation.
-    final medianWallPx = _measureMedianWallThickness(normalized, threshold);
-    final wallCellFraction = medianWallPx / cellSize;
-    final dilationIterations = wallCellFraction > 0.40 ? 0 : 1;
-
-    print(
-      '✅ [GRID] Stage 6: Wall thickness = ${medianWallPx.toStringAsFixed(1)}px'
-      ' (${(wallCellFraction * 100).toStringAsFixed(0)}% of cell)'
-      ' → dilation = $dilationIterations',
-    );
-
+    // ── Stage 7: Adaptive dilation ────────────────────────────────────────
     var processedGrid = dilationIterations > 0
         ? _dilateWalls(grid, width, height, iterations: dilationIterations)
         : grid;
 
-    // ── Stage 7: Remove isolated wall cells ───────────────────────────────
+    // ── Stage 8: Remove isolated wall cells ───────────────────────────────
     // Wall cells with ≤1 wall neighbor are door arcs, furniture noise, or
-    // stray pixels — not structural walls. Real walls always connect to
-    // at least 2 other wall cells.
-    // Run AFTER dilation so arc cells isolated by expansion are also removed.
+    // edge-bleed artifacts — not structural walls.
+    // Structural walls always connect to ≥2 other wall cells.
+    // Run AFTER dilation so arc cells isolated by expansion are also caught.
     processedGrid = _removeIsolatedWalls(processedGrid, width, height);
-    print('✅ [GRID] Stage 7: Isolated wall cells removed');
+    print('✅ [GRID] Stage 8: Isolated wall cells removed');
 
-    // ── Stage 8: Border enforcement ───────────────────────────────────────
-    // Always mark the outermost 2 cell rows/cols as walls.
-    // Prevents paths from routing outside the building perimeter when the
-    // outer wall is thin and partially missed by thresholding.
+    // ── Stage 9: Border enforcement ───────────────────────────────────────
+    // Always mark the outermost 2 cell rows/cols as walls to prevent paths
+    // from routing outside the building when thin outer walls are missed.
     processedGrid = _enforceBorder(processedGrid, width, height);
-    print('✅ [GRID] Stage 8: Border enforced');
+    print('✅ [GRID] Stage 9: Border enforced');
 
     // ── Stats ─────────────────────────────────────────────────────────────
     int wallCells = 0;
@@ -139,14 +181,14 @@ class GridProcessor {
     print('✅ [GRID] Final: ${width}x$height');
     print(
       '✅ [GRID] Walls: $wallCells (${finalWallPct.toStringAsFixed(1)}%)'
-      ' Walkable: ${totalCells - wallCells}',
+      '  Walkable: ${totalCells - wallCells}',
     );
     print('✅ [GRID] Time: ${processingTime.toStringAsFixed(2)}s');
 
     if (finalWallPct < 5) {
-      print('⚠️ [GRID] Very few walls — may miss obstacles');
+      print('⚠️ [GRID] Very few walls detected — may miss obstacles');
     } else if (finalWallPct > 50) {
-      print('⚠️ [GRID] High wall% — may have furniture false-positives');
+      print('⚠️ [GRID] High wall% — possible furniture false-positives');
     } else {
       print('✅ [GRID] Wall% in healthy range');
     }
@@ -170,12 +212,7 @@ class GridProcessor {
   // Stage helpers
   // ═══════════════════════════════════════════════════════════════════════
 
-  /// Stage 2: Sample interior corners (skip outer 15px) to detect background.
-  ///
-  /// WHY: Some floorplan images (e.g. Office) have a dark image frame/border
-  /// in the outermost ~12px rows that is NOT part of the floorplan content.
-  /// Sampling the very corners would return a dark value (~15) and cause the
-  /// entire image to be inverted, making the gray floor (~236) appear as walls.
+  /// Stage 2: Sample interior corners (skip outer 15px margin).
   double _detectBackground(img.Image image) {
     const margin = 15;
     const sampleSize = 30;
@@ -185,7 +222,6 @@ class GridProcessor {
     double total = 0;
     int count = 0;
 
-    // Four interior corner regions
     final regions = [
       [margin, margin, margin + sampleSize, margin + sampleSize],
       [w - margin - sampleSize, margin, w - margin, margin + sampleSize],
@@ -210,7 +246,7 @@ class GridProcessor {
     return count > 0 ? total / count : 255.0;
   }
 
-  /// Stage 3: Invert image (for dark-background floorplans)
+  /// Stage 3: Invert image pixel values.
   img.Image _invertImage(img.Image source) {
     final result = img.Image(width: source.width, height: source.height);
     for (int y = 0; y < source.height; y++) {
@@ -222,7 +258,7 @@ class GridProcessor {
     return result;
   }
 
-  /// Stage 4a: Find most common pixel value (mode)
+  /// Stage 4a: Find most common pixel value (mode).
   int _findMode(img.Image image) {
     final histogram = List<int>.filled(256, 0);
     for (int y = 0; y < image.height; y++) {
@@ -240,7 +276,7 @@ class GridProcessor {
     return mode;
   }
 
-  /// Stage 4b: Otsu's method for optimal threshold
+  /// Stage 4b: Otsu's method for optimal binary threshold.
   int _otsuThreshold(img.Image image) {
     final histogram = List<int>.filled(256, 0);
     for (int y = 0; y < image.height; y++) {
@@ -248,7 +284,6 @@ class GridProcessor {
         histogram[image.getPixel(x, y).r.toInt()]++;
       }
     }
-
     final total = image.width * image.height;
     double sum = 0;
     for (int i = 0; i < 256; i++) sum += i * histogram[i];
@@ -275,66 +310,108 @@ class GridProcessor {
     return threshold;
   }
 
-  /// Stage 5: Classify a grid cell as wall or walkable.
-  ///
-  /// A cell is a wall if >20% of its pixels are darker than [threshold].
-  /// Raised from 15% to 20% to reduce furniture false-positives.
-  bool _isCellWall(
-    img.Image image,
-    int startX,
-    int startY,
-    int cellSize,
-    int threshold,
-  ) {
-    int darkPixels = 0;
-    int totalPixels = 0;
-
-    for (int y = startY; y < startY + cellSize && y < image.height; y++) {
-      for (int x = startX; x < startX + cellSize && x < image.width; x++) {
-        totalPixels++;
-        if (image.getPixel(x, y).r.toInt() < threshold) darkPixels++;
-      }
-    }
-
-    if (totalPixels == 0) return false;
-    return darkPixels / totalPixels > 0.20;
-  }
-
-  /// Stage 6a: Measure median wall thickness in pixels.
-  ///
-  /// Scans horizontal runs of dark pixels across the image at regular
-  /// intervals. Returns the median run length, which corresponds to
-  /// wall thickness. Used to decide whether dilation is needed.
+  /// Stage 5: Measure median wall thickness from horizontal dark pixel runs.
   double _measureMedianWallThickness(img.Image image, int threshold) {
     final runLengths = <int>[];
+    final startY = (image.height * 0.1).toInt();
+    final endY = (image.height * 0.9).toInt();
 
-    // Sample every 20 rows across the middle 60% of the image
-    final startY = (image.height * 0.2).toInt();
-    final endY = (image.height * 0.8).toInt();
-
-    for (int y = startY; y < endY; y += 20) {
+    for (int y = startY; y < endY; y += 15) {
       int runLen = 0;
       for (int x = 0; x < image.width; x++) {
         final isDark = image.getPixel(x, y).r.toInt() < threshold;
         if (isDark) {
           runLen++;
         } else {
-          // Only count runs of 2–25px as walls (filters noise and large fills)
-          if (runLen >= 2 && runLen <= 25) {
-            runLengths.add(runLen);
-          }
+          if (runLen >= 2 && runLen <= 25) runLengths.add(runLen);
           runLen = 0;
         }
       }
     }
 
-    if (runLengths.isEmpty) return 3.0; // Fallback: assume thin walls
-
+    if (runLengths.isEmpty) return 3.0;
     runLengths.sort();
-    return runLengths[runLengths.length ~/ 2].toDouble(); // Median
+    return runLengths[runLengths.length ~/ 2].toDouble();
   }
 
-  /// Stage 6b: Dilate wall cells outward by [iterations] steps (4-connected).
+  /// Stage 6a: Calculate the fraction of dark pixels in a grid cell.
+  double _cellDarkRatio(
+    img.Image image,
+    int startX,
+    int startY,
+    int cellSize,
+    int threshold,
+  ) {
+    int dark = 0, total = 0;
+    for (int y = startY; y < startY + cellSize && y < image.height; y++) {
+      for (int x = startX; x < startX + cellSize && x < image.width; x++) {
+        total++;
+        if (image.getPixel(x, y).r.toInt() < threshold) dark++;
+      }
+    }
+    return total > 0 ? dark / total : 0.0;
+  }
+
+  /// Stage 6b: Tier 2 — check if a cell contains a spanning dark line.
+  ///
+  /// A spanning line must:
+  ///   1. Have a continuous dark run of at least [minRun] pixels, AND
+  ///   2. That run must span at least [minSpanRatio] of the cell dimension.
+  ///
+  /// This distinguishes real thin walls from edge-bleed artifacts:
+  ///   • Real 2px wall crossing a 15px cell → spans 100% → detected ✅
+  ///   • Edge-bleed from adjacent wall (4px at top of cell) → spans 27% → rejected ✅
+  ///
+  /// Without the span check, door-gap cells were falsely marked as walls
+  /// because they contained 4 edge-bleed pixels forming a vertical run of 4
+  /// at column 0 — enough to trigger the old has_line(min_run=3) check.
+  bool _hasSpanningLine(
+    img.Image image,
+    int startX,
+    int startY,
+    int cellSize,
+    int threshold, {
+    int minRun = 3,
+    double minSpanRatio = 0.40,
+  }) {
+    final endX = min(startX + cellSize, image.width);
+    final endY = min(startY + cellSize, image.height);
+    final cellW = endX - startX;
+    final cellH = endY - startY;
+
+    final minHSpan = max(minRun, (cellW * minSpanRatio).toInt());
+    final minVSpan = max(minRun, (cellH * minSpanRatio).toInt());
+
+    // Check for horizontal spanning line
+    for (int y = startY; y < endY; y++) {
+      int run = 0;
+      for (int x = startX; x < endX; x++) {
+        if (image.getPixel(x, y).r.toInt() < threshold) {
+          run++;
+          if (run >= minHSpan) return true;
+        } else {
+          run = 0;
+        }
+      }
+    }
+
+    // Check for vertical spanning line
+    for (int x = startX; x < endX; x++) {
+      int run = 0;
+      for (int y = startY; y < endY; y++) {
+        if (image.getPixel(x, y).r.toInt() < threshold) {
+          run++;
+          if (run >= minVSpan) return true;
+        } else {
+          run = 0;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  /// Stage 7: Dilate wall cells outward (4-connected, [iterations] steps).
   List<List<int>> _dilateWalls(
     List<List<int>> grid,
     int width,
@@ -367,22 +444,19 @@ class GridProcessor {
     return result;
   }
 
-  /// Stage 7: Remove isolated wall cells (≤1 wall neighbor).
+  /// Stage 8: Remove wall cells with ≤1 wall neighbor.
   ///
-  /// Structural walls always connect to at least 2 other wall cells.
-  /// Cells with 0 or 1 wall neighbor are:
-  ///   • Door arc lines (quarter-circle door swing symbols)
+  /// Structural walls always connect to ≥2 other wall cells.
+  /// Isolated cells (0–1 neighbor) are:
+  ///   • Door arc symbols (quarter-circle swing lines)
   ///   • Isolated furniture pixels
-  ///   • Noise from thresholding
-  ///
-  /// Removing these opens up doorways and reduces false wall blocking.
+  ///   • Edge-bleed artifacts not caught by the spanning-line check
   List<List<int>> _removeIsolatedWalls(
     List<List<int>> grid,
     int width,
     int height,
   ) {
     final result = grid.map((row) => List<int>.from(row)).toList();
-
     for (int row = 1; row < height - 1; row++) {
       for (int col = 1; col < width - 1; col++) {
         if (grid[row][col] == 1) {
@@ -391,19 +465,14 @@ class GridProcessor {
               grid[row + 1][col] +
               grid[row][col - 1] +
               grid[row][col + 1];
-          if (wallNeighbors <= 1) {
-            result[row][col] = 0;
-          }
+          if (wallNeighbors <= 1) result[row][col] = 0;
         }
       }
     }
     return result;
   }
 
-  /// Stage 8: Always mark outermost 2 cell rows/columns as walls.
-  ///
-  /// Prevents A* from routing outside the building when thin outer walls
-  /// are partially missed by thresholding (observed in "Thin" floorplan tests).
+  /// Stage 9: Mark outermost 2 cell rows/columns as walls.
   List<List<int>> _enforceBorder(List<List<int>> grid, int width, int height) {
     final result = grid.map((row) => List<int>.from(row)).toList();
     for (int t = 0; t < 2; t++) {
