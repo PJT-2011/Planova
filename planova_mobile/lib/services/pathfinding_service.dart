@@ -15,30 +15,49 @@ class PathfindingService {
     print('   Grid: ${gridModel.width}x${gridModel.height}');
     print('   Cell size: $cellSize px');
 
-    // ✅ FIRST: Check if start and end are walkable
+    // FIX: Instead of hard-rejecting taps on wall cells, snap to the
+    // nearest walkable neighbor. This solves the "No path found" issue
+    // where wall dilation consumes cells that visually look like open space
+    // (clearly seen in test image 7 — destination placed near a corner wall).
+    GridPoint resolvedStart = start;
+    GridPoint resolvedEnd = end;
+
     if (gridModel.grid[start.row][start.col] == 1) {
-      print('❌ [PATH] Start point is on a wall!');
-      return null;
+      final snapped = _findNearestWalkable(gridModel, start);
+      if (snapped == null) {
+        print('❌ [PATH] Start is on a wall with no walkable neighbor nearby');
+        return null;
+      }
+      print('⚠️ [PATH] Start snapped from $start → $snapped');
+      resolvedStart = snapped;
     }
 
     if (gridModel.grid[end.row][end.col] == 1) {
-      print('❌ [PATH] End point is on a wall!');
-      return null;
+      final snapped = _findNearestWalkable(gridModel, end);
+      if (snapped == null) {
+        print('❌ [PATH] End is on a wall with no walkable neighbor nearby');
+        return null;
+      }
+      print('⚠️ [PATH] End snapped from $end → $snapped');
+      resolvedEnd = snapped;
     }
 
-    final path = _astarOptimized(gridModel, start, end);
+    final path = _astarOptimized(gridModel, resolvedStart, resolvedEnd);
 
     if (path == null || path.isEmpty) {
       print('❌ [PATH] No path found');
-      print('   Start walkable: ${gridModel.grid[start.row][start.col] == 0}');
-      print('   End walkable: ${gridModel.grid[end.row][end.col] == 0}');
+      print(
+        '   Start walkable: ${gridModel.grid[resolvedStart.row][resolvedStart.col] == 0}',
+      );
+      print(
+        '   End walkable: ${gridModel.grid[resolvedEnd.row][resolvedEnd.col] == 0}',
+      );
 
-      // ✅ Debug: Print nearby cells
-      print('   Cells around start:');
+      print('   Cells around resolved start:');
       for (int dr = -1; dr <= 1; dr++) {
         for (int dc = -1; dc <= 1; dc++) {
-          final r = start.row + dr;
-          final c = start.col + dc;
+          final r = resolvedStart.row + dr;
+          final c = resolvedStart.col + dc;
           if (r >= 0 && r < gridModel.height && c >= 0 && c < gridModel.width) {
             final isWall = gridModel.grid[r][c] == 1;
             print('     ($r,$c): ${isWall ? "WALL" : "open"}');
@@ -49,21 +68,22 @@ class PathfindingService {
       return null;
     }
 
-    print('✅ [PATH] Found: ${path.length} waypoints');
+    // FIX: Smooth the raw A* path using line-of-sight.
+    // Previously _smoothPath existed but was never called, causing the drawn
+    // route line to cut visually through wall corners (test image 5 — Office
+    // floorplan, diagonal line through interior partition).
+    final smoothed = _smoothPath(path, gridModel);
+    print('✅ [PATH] Smoothed: ${path.length} → ${smoothed.length} waypoints');
 
-    // Rest of the method stays the same...
-
-    // Calculate REAL distance
-    // Assuming: floorplan represents ~20m x 20m space
-    // Image size ~700px = 20m → 1px = 0.0286m
-    // With cellSize=15: 1 cell = 15px = 0.43m
-
-    final metersPerCell = 0.43; // Calibrate this to your building!
+    // Calculate distance
+    // Assuming: 1 cell = 15px, floorplan ~700px wide ≈ 20m → 1px ≈ 0.0286m
+    // So 1 cell (15px) ≈ 0.43m. Calibrate metersPerCell to your building.
+    final metersPerCell = 0.43;
 
     double totalDistance = 0;
-    for (int i = 0; i < path.length - 1; i++) {
-      final p1 = path[i];
-      final p2 = path[i + 1];
+    for (int i = 0; i < smoothed.length - 1; i++) {
+      final p1 = smoothed[i];
+      final p2 = smoothed[i + 1];
       final cellDist = sqrt(
         pow((p2.col - p1.col).toDouble(), 2) +
             pow((p2.row - p1.row).toDouble(), 2),
@@ -80,19 +100,46 @@ class PathfindingService {
     print(
       '✅ [PATH] Time: ${timeSeconds}s (${(timeSeconds / 60).toStringAsFixed(1)}min)',
     );
-    print('✅ [PATH] Cells traveled: ${totalDistance.toStringAsFixed(0)}');
 
-    final directions = _generateDirections(path);
+    final directions = _generateDirections(smoothed);
 
     return RouteModel(
-      path: path,
+      path: smoothed,
       directions: directions,
       distance: distanceMeters,
       estimatedTime: timeSeconds,
     );
   }
 
-  /// A* optimized
+  /// FIX: Find the nearest walkable cell to a given point within a radius.
+  /// Used to snap start/end taps that land on wall-dilated cells to the
+  /// closest open neighbor, preventing false "No path found" errors.
+  GridPoint? _findNearestWalkable(
+    GridModel grid,
+    GridPoint point, {
+    int maxRadius = 4,
+  }) {
+    for (int radius = 1; radius <= maxRadius; radius++) {
+      for (int dr = -radius; dr <= radius; dr++) {
+        for (int dc = -radius; dc <= radius; dc++) {
+          // Only check the perimeter ring of this radius
+          if (dr.abs() != radius && dc.abs() != radius) continue;
+
+          final r = point.row + dr;
+          final c = point.col + dc;
+
+          if (r >= 0 && r < grid.height && c >= 0 && c < grid.width) {
+            if (grid.grid[r][c] == 0) {
+              return GridPoint(row: r, col: c);
+            }
+          }
+        }
+      }
+    }
+    return null; // No walkable cell found within maxRadius
+  }
+
+  /// A* pathfinding (optimized)
   List<GridPoint>? _astarOptimized(
     GridModel grid,
     GridPoint start,
@@ -117,14 +164,12 @@ class PathfindingService {
       for (final neighbor in _getNeighbors(current.point, grid)) {
         if (closedSet.contains(neighbor)) continue;
 
-        // Skip walls
         if (grid.grid[neighbor.row][neighbor.col] == 1) continue;
 
-        // Calculate cost
         final isDiagonal =
             (neighbor.row != current.point.row) &&
             (neighbor.col != current.point.col);
-        final moveCost = isDiagonal ? 1.414 : 1.0; // Diagonal costs more
+        final moveCost = isDiagonal ? 1.414 : 1.0;
 
         final tentativeG = gScore[current.point]! + moveCost;
 
@@ -153,7 +198,6 @@ class PathfindingService {
   List<GridPoint> _getNeighbors(GridPoint p, GridModel grid) {
     final neighbors = <GridPoint>[];
 
-    // Cardinal directions (always safe)
     final cardinalMoves = [
       [-1, 0], // North
       [1, 0], // South
@@ -161,44 +205,36 @@ class PathfindingService {
       [0, 1], // East
     ];
 
-    // Add cardinal neighbors
+    final diagonalMoves = [
+      [-1, -1], // Northwest
+      [-1, 1], // Northeast
+      [1, -1], // Southwest
+      [1, 1], // Southeast
+    ];
+
     for (final move in cardinalMoves) {
       final nr = p.row + move[0];
       final nc = p.col + move[1];
 
       if (nr >= 0 && nr < grid.height && nc >= 0 && nc < grid.width) {
-        // ✅ FIXED: Correct constructor
         neighbors.add(GridPoint(row: nr, col: nc));
       }
     }
 
-    // ✅ DIAGONAL MOVEMENT: Only if BOTH adjacent cells are clear
-    final diagonalMoves = [
-      [-1, -1, -1, 0, 0, -1], // NW: check N and W
-      [-1, 1, -1, 0, 0, 1], // NE: check N and E
-      [1, -1, 1, 0, 0, -1], // SW: check S and W
-      [1, 1, 1, 0, 0, 1], // SE: check S and E
-    ];
-
-    for (final move in diagonalMoves) {
+    // Add diagonal neighbors ONLY if both adjacent cardinal cells are walkable.
+    // This prevents cutting through wall corners.
+    for (int i = 0; i < diagonalMoves.length; i++) {
+      final move = diagonalMoves[i];
       final nr = p.row + move[0];
       final nc = p.col + move[1];
 
-      // Must be in bounds
-      if (nr < 0 || nr >= grid.height || nc < 0 || nc >= grid.width) {
-        continue;
-      }
+      if (nr >= 0 && nr < grid.height && nc >= 0 && nc < grid.width) {
+        final verticalClear = grid.grid[p.row + move[0]][p.col] == 0;
+        final horizontalClear = grid.grid[p.row][p.col + move[1]] == 0;
 
-      // Check the two adjacent cells that form the corner
-      final check1Row = p.row + move[2];
-      final check1Col = p.col + move[3];
-      final check2Row = p.row + move[4];
-      final check2Col = p.col + move[5];
-
-      // Both adjacent cells must be walkable
-      if (grid.grid[check1Row][check1Col] == 0 &&
-          grid.grid[check2Row][check2Col] == 0) {
-        neighbors.add(GridPoint(row: nr, col: nc));
+        if (verticalClear && horizontalClear) {
+          neighbors.add(GridPoint(row: nr, col: nc));
+        }
       }
     }
 
@@ -218,7 +254,12 @@ class PathfindingService {
     return path;
   }
 
-  /// Smooth path - remove unnecessary waypoints
+  /// FIX: Smooth path by skipping intermediate waypoints where line-of-sight
+  /// is clear. Previously this method existed but was NEVER called, so the
+  /// raw A* path (with many small steps) was drawn directly — causing the
+  /// route line to visually cut through wall corners (test image 5).
+  ///
+  /// Now called in findPath() before returning the RouteModel.
   List<GridPoint> _smoothPath(List<GridPoint> path, GridModel grid) {
     if (path.length <= 2) return path;
 
@@ -228,7 +269,6 @@ class PathfindingService {
     while (i < path.length - 1) {
       int farthest = i + 1;
 
-      // Try to skip as many points as possible
       for (int j = i + 2; j < path.length; j++) {
         if (_hasLineOfSight(path[i], path[j], grid)) {
           farthest = j;
@@ -244,7 +284,8 @@ class PathfindingService {
     return smoothed;
   }
 
-  /// Check if there's clear line of sight (Bresenham's line algorithm)
+  /// Check if there is a clear line of sight between two grid points.
+  /// Uses Bresenham's line algorithm and checks every cell along the line.
   bool _hasLineOfSight(GridPoint p1, GridPoint p2, GridModel grid) {
     int x0 = p1.col;
     int y0 = p1.row;
@@ -258,7 +299,9 @@ class PathfindingService {
     var err = dx - dy;
 
     while (true) {
-      // Check if current position is a wall
+      if (y0 < 0 || y0 >= grid.height || x0 < 0 || x0 >= grid.width) {
+        return false;
+      }
       if (grid.grid[y0][x0] == 1) return false;
 
       if (x0 == x1 && y0 == y1) break;
@@ -277,32 +320,12 @@ class PathfindingService {
     return true;
   }
 
-  /// Calculate real-world distance
-  double _calculateRealDistance(List<GridPoint> path, int cellSize) {
-    double totalDistance = 0;
-
-    for (int i = 0; i < path.length - 1; i++) {
-      final p1 = path[i];
-      final p2 = path[i + 1];
-
-      final dx = (p2.col - p1.col).toDouble();
-      final dy = (p2.row - p1.row).toDouble();
-      final cellDistance = sqrt(dx * dx + dy * dy);
-
-      // Convert cell distance to meters (1 cell ≈ 0.5 meters)
-      totalDistance += cellDistance * 0.5;
-    }
-
-    return totalDistance;
-  }
-
   /// Generate turn-by-turn directions
   List<String> _generateDirections(List<GridPoint> path) {
     if (path.length <= 1) return ['You have arrived'];
 
     final directions = <String>['Start at your current location'];
 
-    // Generate direction for every ~10% of the path
     final step = max(1, path.length ~/ 8);
 
     for (int i = step; i < path.length; i += step) {

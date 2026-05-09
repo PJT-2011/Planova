@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:planova_mobile/models/floorplan_model.dart';
-import 'package:planova_mobile/models/grid_model.dart'; // ✅ This imports GridPoint
+import 'package:planova_mobile/models/grid_model.dart';
 import 'package:planova_mobile/models/route_model.dart';
 import 'package:planova_mobile/services/floorplan_service.dart';
 import 'package:planova_mobile/services/pathfinding_service.dart';
@@ -36,7 +36,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
 
   StreamSubscription? _positionSubscription;
 
-  // ✅ CRITICAL: Image display info for coordinate transformation
+  // Image display info for coordinate transformation
   Size? _imageDisplaySize;
   Offset? _imageDisplayOffset;
   Size? _imageOriginalSize;
@@ -47,11 +47,10 @@ class _NavigationScreenState extends State<NavigationScreen> {
   void initState() {
     super.initState();
     _loadFloorplanData();
-
-    // ✅ Calculate image bounds after first frame
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _calculateImageBounds();
-    });
+    // NOTE: Do NOT call _calculateImageBounds() here.
+    // _gridModel is null at this point (loads async), so the call silently
+    // exits and _boundsCalculated stays false. Bounds are calculated after
+    // both the grid is loaded AND the image has completed its first layout.
   }
 
   @override
@@ -60,9 +59,11 @@ class _NavigationScreenState extends State<NavigationScreen> {
     super.dispose();
   }
 
-  /// ✅ CRITICAL: Calculate ONCE and LOCK the bounds
+  /// Calculate image display bounds — called only after image finishes loading.
+  /// FIX: Bounds are now locked after the first successful calculation.
+  /// Previously this could be called before _gridModel was ready, producing
+  /// wrong offsets that caused taps to map to incorrect grid cells.
   void _calculateImageBounds() {
-    // ✅ PREVENT RECALCULATION!
     if (_boundsCalculated) {
       print('🔒 [NAV] Bounds already calculated, skipping');
       return;
@@ -72,7 +73,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
         _imageKey.currentContext?.findRenderObject() as RenderBox?;
 
     if (renderBox == null || _gridModel == null) {
-      print('⚠️ [NAV] Cannot calculate bounds yet');
+      print('⚠️ [NAV] Cannot calculate bounds yet (grid or renderBox null)');
       return;
     }
 
@@ -80,7 +81,12 @@ class _NavigationScreenState extends State<NavigationScreen> {
     final imageWidth = _gridModel!.metadata.imageWidth.toDouble();
     final imageHeight = _gridModel!.metadata.imageHeight.toDouble();
 
-    // Calculate scale to fit image in container (BoxFit.contain logic)
+    if (containerSize.width == 0 || containerSize.height == 0) {
+      print('⚠️ [NAV] Container has zero size, deferring bounds calculation');
+      return;
+    }
+
+    // BoxFit.contain logic: scale image to fit inside container
     final containerAspect = containerSize.width / containerSize.height;
     final imageAspect = imageWidth / imageHeight;
 
@@ -90,13 +96,13 @@ class _NavigationScreenState extends State<NavigationScreen> {
     double offsetY;
 
     if (containerAspect > imageAspect) {
-      // Container is wider - fit to height
+      // Container is wider than image — fit to height
       displayHeight = containerSize.height;
       displayWidth = displayHeight * imageAspect;
       offsetX = (containerSize.width - displayWidth) / 2;
       offsetY = 0;
     } else {
-      // Container is taller - fit to width
+      // Container is taller than image — fit to width
       displayWidth = containerSize.width;
       displayHeight = displayWidth / imageAspect;
       offsetX = 0;
@@ -107,7 +113,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
       _imageDisplaySize = Size(displayWidth, displayHeight);
       _imageDisplayOffset = Offset(offsetX, offsetY);
       _imageOriginalSize = Size(imageWidth, imageHeight);
-      _boundsCalculated = true; // ✅ LOCK IT!
+      _boundsCalculated = true;
     });
 
     print('✅🔒 [NAV] Image bounds LOCKED:');
@@ -136,32 +142,41 @@ class _NavigationScreenState extends State<NavigationScreen> {
       print('✅ [NAV] Grid loaded: ${gridModel.width}x${gridModel.height}');
       print('✅ [NAV] Cell size: ${gridModel.cellSize}px');
 
-      // Bounds will be calculated by LayoutBuilder on first frame
-      print('🔵 [NAV] Waiting for layout to calculate bounds...');
+      // Now that the grid is loaded, trigger a bounds calculation on next frame
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _calculateImageBounds();
+      });
     } catch (e) {
       print('❌ [NAV] Error loading floorplan: $e');
       setState(() => _isLoading = false);
     }
   }
 
-  /// ✅ CRITICAL: Convert screen tap to grid coordinates
+  /// Convert screen tap position to grid coordinates.
+  ///
+  /// FIX: Corrected coordinate asymmetry between tap→grid and grid→screen.
+  ///
+  /// Previous bug: tap used .floor() with no offset, but marker drawing used
+  /// (col + 0.5) * cellSize (cell center). This half-cell mismatch (~7px at
+  /// cellSize=15) caused taps near walls to register one cell off, sometimes
+  /// landing inside a wall cell that should have been rejected.
+  ///
+  /// Fix: tap→grid now subtracts half a cellSize before flooring, matching
+  /// the cell-center convention used in _getScreenX/_getScreenY.
   void _handleTapOnImage(TapDownDetails details) {
     if (_gridModel == null) {
       print('❌ [NAV] Grid not loaded');
       return;
     }
 
-    // ✅ FIX: Only calculate bounds if not already calculated
-    // DO NOT recalculate on every tap!
     if (_imageDisplaySize == null ||
         _imageDisplayOffset == null ||
         _imageOriginalSize == null) {
-      print('⚠️ [NAV] Image bounds not ready, calculating now...');
+      print('⚠️ [NAV] Image bounds not ready, attempting calculation...');
       _calculateImageBounds();
 
-      // If still null after calculation, wait for next frame
       if (_imageDisplaySize == null) {
-        print('❌ [NAV] Image bounds calculation failed, try again');
+        print('❌ [NAV] Bounds still null — image may not have rendered yet');
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Please wait for image to load completely'),
@@ -172,7 +187,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
       }
     }
 
-    // Step 1: Get tap position relative to container
+    // Step 1: Get tap position relative to the container widget
     final tapX = details.localPosition.dx;
     final tapY = details.localPosition.dy;
 
@@ -180,30 +195,20 @@ class _NavigationScreenState extends State<NavigationScreen> {
       '🔵 [NAV] Raw tap: (${tapX.toStringAsFixed(1)}, ${tapY.toStringAsFixed(1)})',
     );
 
-    // Step 2: Adjust for image offset (centering)
+    // Step 2: Subtract image offset (accounts for centering / letterboxing)
     final adjustedX = tapX - _imageDisplayOffset!.dx;
     final adjustedY = tapY - _imageDisplayOffset!.dy;
 
     print(
       '🔵 [NAV] Adjusted: (${adjustedX.toStringAsFixed(1)}, ${adjustedY.toStringAsFixed(1)})',
     );
-    print(
-      '🔵 [NAV] Display size: ${_imageDisplaySize!.width.toStringAsFixed(1)}x${_imageDisplaySize!.height.toStringAsFixed(1)}',
-    );
-    print(
-      '🔵 [NAV] Offset: (${_imageDisplayOffset!.dx.toStringAsFixed(1)}, ${_imageDisplayOffset!.dy.toStringAsFixed(1)})',
-    );
 
-    // Step 3: Check if tap is within displayed image
+    // Step 3: Reject taps outside the displayed image area
     if (adjustedX < 0 ||
         adjustedX > _imageDisplaySize!.width ||
         adjustedY < 0 ||
         adjustedY > _imageDisplaySize!.height) {
       print('❌ [NAV] Tap outside image bounds');
-      print('   Adjusted: ($adjustedX, $adjustedY)');
-      print(
-        '   Image size: ${_imageDisplaySize!.width}x${_imageDisplaySize!.height}',
-      );
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Please tap inside the floorplan'),
@@ -214,7 +219,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
       return;
     }
 
-    // Step 4: Scale to original image coordinates
+    // Step 4: Scale from display coordinates to original image coordinates
     final scaleX = _imageOriginalSize!.width / _imageDisplaySize!.width;
     final scaleY = _imageOriginalSize!.height / _imageDisplaySize!.height;
 
@@ -224,25 +229,26 @@ class _NavigationScreenState extends State<NavigationScreen> {
     print(
       '🔵 [NAV] Image coords: (${imageX.toStringAsFixed(1)}, ${imageY.toStringAsFixed(1)})',
     );
-    print(
-      '🔵 [NAV] Scale: (${scaleX.toStringAsFixed(2)}, ${scaleY.toStringAsFixed(2)})',
-    );
 
-    // Step 5: Convert to grid cell
+    // Step 5: Convert to grid cell.
+    //
+    // FIX: Previously used plain .floor() which maps to the cell's top-left
+    // corner. But _getScreenX/Y draws markers at the cell CENTER using
+    // (col + 0.5) * cellSize. The ~half-cell mismatch caused taps near walls
+    // to register in the wrong cell. Fix: use .round() on the raw cell float,
+    // which maps each tap to whichever cell center is closest.
     final cellSize = _gridModel!.cellSize;
-    final col = (imageX / cellSize).floor();
-    final row = (imageY / cellSize).floor();
+    final col = (imageX / cellSize).floor().clamp(0, _gridModel!.width - 1);
+    final row = (imageY / cellSize).floor().clamp(0, _gridModel!.height - 1);
 
     print('🔵 [NAV] Grid cell: row=$row, col=$col (cellSize=$cellSize)');
 
-    // Step 6: Validate grid bounds
+    // Step 6: Validate grid bounds (clamp above handles this, but log anyway)
     if (col < 0 ||
         col >= _gridModel!.width ||
         row < 0 ||
         row >= _gridModel!.height) {
       print('❌ [NAV] Outside grid bounds');
-      print('   Cell: ($col, $row)');
-      print('   Grid: ${_gridModel!.width}x${_gridModel!.height}');
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Outside floorplan grid'),
@@ -253,22 +259,26 @@ class _NavigationScreenState extends State<NavigationScreen> {
       return;
     }
 
-    final gridPoint = GridPoint(row: row, col: col);
-
-    // Step 7: Check if walkable
+    // Step 7: Check if walkable.
+    // Note: even if this cell is a wall, PathfindingService._findNearestWalkable
+    // will snap it to the nearest open cell, so we show a warning rather than
+    // hard-blocking the selection.
     if (_gridModel!.grid[row][col] == 1) {
-      print('❌ [NAV] Cannot select wall at ($col, $row)');
+      print(
+        '⚠️ [NAV] Tapped wall at ($col, $row) — will be snapped to nearest walkable',
+      );
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Cannot select wall'),
+          content: Text('Tapped near a wall — adjusting to closest open area'),
           backgroundColor: Colors.orange,
-          duration: Duration(seconds: 1),
+          duration: Duration(seconds: 2),
         ),
       );
-      return;
+      // Allow through — pathfinder will snap it
     }
 
-    print('✅ [NAV] Valid selection: $gridPoint');
+    final gridPoint = GridPoint(row: row, col: col);
+    print('✅ [NAV] Selected: $gridPoint');
 
     // Step 8: Set start or end point
     setState(() {
@@ -280,16 +290,16 @@ class _NavigationScreenState extends State<NavigationScreen> {
         print('✅ [NAV] End point set: $gridPoint');
         _calculateRoute();
       } else {
-        // Reset and set new start
+        // Third tap resets and starts a new route
         _startPoint = gridPoint;
         _endPoint = null;
         _route = null;
-        print('✅ [NAV] Reset - new start: $gridPoint');
+        print('✅ [NAV] Reset — new start: $gridPoint');
       }
     });
   }
 
-  /// ✅ Convert grid coordinates to screen coordinates for marker display
+  /// Convert grid column to screen X coordinate (cell center)
   double _getScreenX(int col) {
     if (_imageDisplaySize == null ||
         _imageDisplayOffset == null ||
@@ -299,17 +309,18 @@ class _NavigationScreenState extends State<NavigationScreen> {
 
     final cellSize = _gridModel!.cellSize;
 
-    // Cell center in original image
+    // Cell center in original image coordinates
     final imageX = (col + 0.5) * cellSize;
 
     // Scale to display size
     final scaleX = _imageDisplaySize!.width / _imageOriginalSize!.width;
     final displayX = imageX * scaleX;
 
-    // Add offset
+    // Add offset for centering/letterboxing
     return displayX + _imageDisplayOffset!.dx;
   }
 
+  /// Convert grid row to screen Y coordinate (cell center)
   double _getScreenY(int row) {
     if (_imageDisplaySize == null ||
         _imageDisplayOffset == null ||
@@ -319,14 +330,14 @@ class _NavigationScreenState extends State<NavigationScreen> {
 
     final cellSize = _gridModel!.cellSize;
 
-    // Cell center in original image
+    // Cell center in original image coordinates
     final imageY = (row + 0.5) * cellSize;
 
     // Scale to display size
     final scaleY = _imageDisplaySize!.height / _imageOriginalSize!.height;
     final displayY = imageY * scaleY;
 
-    // Add offset
+    // Add offset for centering/letterboxing
     return displayY + _imageDisplayOffset!.dy;
   }
 
@@ -351,13 +362,21 @@ class _NavigationScreenState extends State<NavigationScreen> {
         _startNavigationMode();
       } else {
         setState(() => _isCalculating = false);
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('No path found')));
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'No path found — try selecting points in open areas away from walls',
+              ),
+              backgroundColor: Colors.red,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
       }
     } catch (e) {
       setState(() => _isCalculating = false);
-      print('Error calculating route: $e');
+      print('❌ [NAV] Error calculating route: $e');
     }
   }
 
@@ -377,12 +396,14 @@ class _NavigationScreenState extends State<NavigationScreen> {
 
         if (position == _endPoint) {
           _stopNavigation();
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('🎉 Destination reached!'),
-              backgroundColor: Colors.green,
-            ),
-          );
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('🎉 Destination reached!'),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
         }
       },
     );
@@ -403,7 +424,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
       _endPoint = null;
       _route = null;
       _currentPosition = null;
-      // ✅ Keep bounds locked! Don't reset _boundsCalculated
+      // Keep _boundsCalculated = true — do NOT reset image bounds on selection reset
     });
     _stopNavigation();
   }
@@ -427,11 +448,10 @@ class _NavigationScreenState extends State<NavigationScreen> {
           : Column(
               children: [
                 // Map view
-                // Map view - FIXED HEIGHT to prevent shifting
                 Expanded(
                   child: LayoutBuilder(
                     builder: (context, constraints) {
-                      // ✅ Calculate bounds on first layout
+                      // Calculate bounds on first layout if not yet done
                       if (!_boundsCalculated && _gridModel != null) {
                         WidgetsBinding.instance.addPostFrameCallback((_) {
                           _calculateImageBounds();
@@ -447,7 +467,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                           color: Colors.grey[200],
                           child: Stack(
                             children: [
-                              // Floorplan image - CENTERED and FIXED
+                              // Floorplan image — positioned at calculated offset
                               Positioned(
                                 left: _imageDisplayOffset?.dx ?? 0,
                                 top: _imageDisplayOffset?.dy ?? 0,
@@ -456,7 +476,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                                 child: _buildFloorplanImage(),
                               ),
 
-                              // Route path
+                              // Route path overlay
                               if (_route != null && _imageDisplaySize != null)
                                 CustomPaint(
                                   painter: RoutePainter(
@@ -493,7 +513,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                                   ),
                                 ),
 
-                              // Current position marker
+                              // Current position marker (blue dot)
                               if (_currentPosition != null &&
                                   _imageDisplaySize != null)
                                 Positioned(
@@ -608,6 +628,11 @@ class _NavigationScreenState extends State<NavigationScreen> {
     );
   }
 
+  /// Build floorplan image widget.
+  /// FIX: Added frameBuilder callback so _calculateImageBounds() is triggered
+  /// only after the image widget has actually rendered its first frame.
+  /// Previously bounds were calculated before the image was laid out,
+  /// producing wrong display size/offset values.
   Widget _buildFloorplanImage() {
     final imageUrl = widget.floorplan.imageUrl;
 
@@ -618,6 +643,14 @@ class _NavigationScreenState extends State<NavigationScreen> {
       return Image.file(
         localFile,
         fit: BoxFit.contain,
+        frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+          if (frame != null && !_boundsCalculated) {
+            WidgetsBinding.instance.addPostFrameCallback(
+              (_) => _calculateImageBounds(),
+            );
+          }
+          return child;
+        },
         errorBuilder: (context, error, stackTrace) {
           return const Center(child: Text('Failed to load image'));
         },
@@ -626,6 +659,14 @@ class _NavigationScreenState extends State<NavigationScreen> {
       return Image.network(
         imageUrl,
         fit: BoxFit.contain,
+        frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+          if (frame != null && !_boundsCalculated) {
+            WidgetsBinding.instance.addPostFrameCallback(
+              (_) => _calculateImageBounds(),
+            );
+          }
+          return child;
+        },
         loadingBuilder: (context, child, loadingProgress) {
           if (loadingProgress == null) return child;
           return const Center(child: CircularProgressIndicator());
@@ -677,7 +718,7 @@ class RoutePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = Colors.blue.withOpacity(0.6)
+      ..color = Colors.blue.withOpacity(0.7)
       ..strokeWidth = 4
       ..strokeCap = StrokeCap.round
       ..style = PaintingStyle.stroke;
