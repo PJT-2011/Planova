@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:planova_mobile/screens/login_screen.dart';
 import 'package:planova_mobile/screens/home_screen.dart';
+import 'package:planova_mobile/screens/onboarding_screen.dart';
 import 'package:planova_mobile/services/auth_service.dart';
 
 void main() async {
@@ -46,31 +48,25 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   void initState() {
     super.initState();
-    _checkAuthState();
+    _checkOnboarding();
   }
 
-  Future<void> _checkAuthState() async {
-    // Wait 2 seconds to show splash
+  Future<void> _checkOnboarding() async {
     await Future.delayed(const Duration(seconds: 2));
 
-    if (mounted) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const HomeScreen()),
-      );
-    }
+    final prefs = await SharedPreferences.getInstance();
+    final onboardingComplete = prefs.getBool('onboarding_complete') ?? false;
 
-    final user = _authService.currentUser;
     if (mounted) {
-      if (user != null) {
+      if (!onboardingComplete) {
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (context) => const HomeScreen()),
+          MaterialPageRoute(builder: (context) => const OnboardingScreen()),
         );
       } else {
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (context) => const LoginScreen()),
+          MaterialPageRoute(builder: (context) => const HomeScreen()),
         );
       }
     }
