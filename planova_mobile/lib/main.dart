@@ -16,8 +16,6 @@ void main() async {
     print('❌ Firebase initialization error: $e');
   }
 
-  print('🔵 Running in LOCAL MODE (Firebase disabled)');
-
   runApp(const PlanovaApp());
 }
 
@@ -96,10 +94,7 @@ class _SplashScreenState extends State<SplashScreen> {
               style: TextStyle(fontSize: 16, color: Colors.white70),
             ),
             SizedBox(height: 20),
-            Text(
-              '🔧 LOCAL MODE',
-              style: TextStyle(fontSize: 14, color: Colors.orange),
-            ),
+
             SizedBox(height: 40),
             CircularProgressIndicator(
               valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
