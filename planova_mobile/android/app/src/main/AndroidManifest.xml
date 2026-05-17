@@ -7,9 +7,12 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <uses-permission android:name="android.permission.BODY_SENSORS"/>
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+    
 
     <application
-        android:label="planova_mobile"
+        android:label="Planova"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         

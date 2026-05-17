@@ -7,12 +7,25 @@
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:903176781310:android:ebcdc706c1d0d62573d4af",
+        "mobilesdk_app_id": "1:903176781310:android:165a03493a2aa50a73d4af",
         "android_client_info": {
           "package_name": "com.example.planova_mobile"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "903176781310-ci9qvedosifh9ee5fu08est89m4fa455.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.planova_mobile",
+            "certificate_hash": "eee6da42f3ba851fa382249e4d2c8251733146af"
+          }
+        },
+        {
+          "client_id": "903176781310-f3fa48oc7kl44p7ae4og9sur99r6oc4r.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyAgjYQD-sVwX173HWTd34GNoAGkMXERjkM"
@@ -20,7 +33,63 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "903176781310-f3fa48oc7kl44p7ae4og9sur99r6oc4r.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "903176781310-gae369ikdpq3kjmnqkl57ffc49m7bu68.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.planovaMobile"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:903176781310:android:ebcdc706c1d0d62573d4af",
+        "android_client_info": {
+          "package_name": "com.planova.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "903176781310-8adscc1crhhb7hhlee6fu75cqsicj40a.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.planova.app",
+            "certificate_hash": "eee6da42f3ba851fa382249e4d2c8251733146af"
+          }
+        },
+        {
+          "client_id": "903176781310-f3fa48oc7kl44p7ae4og9sur99r6oc4r.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAgjYQD-sVwX173HWTd34GNoAGkMXERjkM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "903176781310-f3fa48oc7kl44p7ae4og9sur99r6oc4r.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "903176781310-gae369ikdpq3kjmnqkl57ffc49m7bu68.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.planovaMobile"
+              }
+            }
+          ]
         }
       }
     }

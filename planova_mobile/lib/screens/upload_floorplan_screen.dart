@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:planova_mobile/services/floorplan_service.dart';
+import 'package:planova_mobile/screens/floorplan_processing_screen.dart';
 
 class UploadFloorplanScreen extends StatefulWidget {
   const UploadFloorplanScreen({Key? key}) : super(key: key);

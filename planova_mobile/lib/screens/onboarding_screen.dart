@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:planova_mobile/screens/home_screen.dart';
+import 'package:planova_mobile/screens/login_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class OnboardingScreen extends StatefulWidget {
@@ -61,16 +61,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     await prefs.setBool('onboarding_complete', true);
 
     if (mounted) {
+      // ✅ Always go to LoginScreen after onboarding
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const HomeScreen()),
+        MaterialPageRoute(builder: (context) => const LoginScreen()),
       );
     }
   }
 
-  void _skip() {
-    _completeOnboarding();
-  }
+  void _skip() => _completeOnboarding();
 
   void _next() {
     if (_currentPage < _pages.length - 1) {
@@ -90,41 +89,25 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Skip button
             Align(
               alignment: Alignment.topRight,
               child: TextButton(onPressed: _skip, child: const Text('Skip')),
             ),
-
-            // Pages
             Expanded(
               child: PageView.builder(
                 controller: _pageController,
-                onPageChanged: (index) {
-                  setState(() {
-                    _currentPage = index;
-                  });
-                },
+                onPageChanged: (index) => setState(() => _currentPage = index),
                 itemCount: _pages.length,
-                itemBuilder: (context, index) {
-                  return _buildPage(_pages[index]);
-                },
+                itemBuilder: (context, index) => _buildPage(_pages[index]),
               ),
             ),
-
-            // Dots indicator
             Padding(
               padding: const EdgeInsets.all(16.0),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
-                children: List.generate(
-                  _pages.length,
-                  (index) => _buildDot(index),
-                ),
+                children: List.generate(_pages.length, _buildDot),
               ),
             ),
-
-            // Next/Get Started button
             Padding(
               padding: const EdgeInsets.all(24.0),
               child: SizedBox(
@@ -159,7 +142,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          // Icon
           Container(
             width: 200,
             height: 200,
@@ -170,16 +152,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             child: Icon(page.icon, size: 100, color: page.color),
           ),
           const SizedBox(height: 48),
-
-          // Title
           Text(
             page.title,
             style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 16),
-
-          // Description
           Text(
             page.description,
             style: TextStyle(

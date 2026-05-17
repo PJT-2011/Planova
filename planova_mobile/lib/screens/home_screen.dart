@@ -1,12 +1,9 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:planova_mobile/services/auth_service.dart';
-import 'package:planova_mobile/services/floorplan_service.dart';
-import 'package:planova_mobile/services/mock_storage_service.dart';
-import 'package:planova_mobile/models/floorplan_model.dart';
 import 'package:planova_mobile/screens/login_screen.dart';
-import 'package:planova_mobile/screens/upload_floorplan_screen.dart';
-import 'package:planova_mobile/screens/floorplan_detail_screen.dart';
+import 'package:planova_mobile/screens/building_management_screen.dart';
+import 'package:planova_mobile/screens/qr_scanner_screen.dart';
+import 'package:planova_mobile/screens/profile_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -17,7 +14,6 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final AuthService _authService = AuthService();
-  final FloorplanService _floorplanService = FloorplanService();
   Map<String, dynamic>? _userData;
   bool _isLoading = true;
 
@@ -35,368 +31,328 @@ class _HomeScreenState extends State<HomeScreen> {
         _userData = data;
         _isLoading = false;
       });
+    } else {
+      setState(() => _isLoading = false);
     }
   }
 
-  Future<void> _signOut() async {
-    await _authService.signOut();
-    if (mounted) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => const LoginScreen()),
-      );
-    }
-  }
+  String get _userId => _authService.currentUser?.uid ?? '';
 
-  void _navigateToUpload() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => const UploadFloorplanScreen()),
-    );
+  String get _initials {
+    final name = _userData?['name'] ?? 'U';
+    return name.isNotEmpty ? name[0].toUpperCase() : 'U';
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('PLANOVA'),
+        title: const Text(
+          'PLANOVA',
+          style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.5),
+        ),
         actions: [
-          IconButton(icon: const Icon(Icons.logout), onPressed: _signOut),
+          // ✅ Profile avatar button instead of logout
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: GestureDetector(
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ProfileScreen()),
+              ).then((_) => _loadUserData()),
+              child: CircleAvatar(
+                radius: 18,
+                backgroundColor: Theme.of(context).colorScheme.primary,
+                backgroundImage: _userData?['photoUrl'] != null
+                    ? NetworkImage(_userData!['photoUrl'])
+                    : null,
+                child: _userData?['photoUrl'] == null
+                    ? Text(
+                        _initials,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      )
+                    : null,
+              ),
+            ),
+          ),
         ],
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: _loadUserData,
-              child: SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(24.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Welcome message
-                    Text(
-                      'Welcome, ${_userData?['name'] ?? 'User'}!',
-                      style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      _userData?['email'] ?? '',
-                      style: const TextStyle(fontSize: 14, color: Colors.grey),
-                    ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // ── Welcome header ─────────────────────────────────────────────
+            Text(
+              'Welcome, ${_userData?['name'] ?? 'User'}!',
+              style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _userData?['email'] ?? '',
+              style: const TextStyle(fontSize: 14, color: Colors.grey),
+            ),
 
-                    // Storage mode indicator
-                    const SizedBox(height: 16),
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: _floorplanService.USE_MOCK_STORAGE
-                            ? Colors.orange.withOpacity(0.1)
-                            : Colors.blue.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: _floorplanService.USE_MOCK_STORAGE
-                              ? Colors.orange
-                              : Colors.blue,
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            _floorplanService.USE_MOCK_STORAGE
-                                ? Icons.phone_android
-                                : Icons.cloud,
-                            color: _floorplanService.USE_MOCK_STORAGE
-                                ? Colors.orange
-                                : Colors.blue,
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              _floorplanService.USE_MOCK_STORAGE
-                                  ? 'Demo Mode: Using local storage'
-                                  : 'Production Mode: Using Firebase Storage',
-                              style: TextStyle(
-                                color: _floorplanService.USE_MOCK_STORAGE
-                                    ? Colors.orange[900]
-                                    : Colors.blue[900],
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 32),
+            const SizedBox(height: 32),
 
-                    // Upload floorplan card
-                    Card(
-                      elevation: 4,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: InkWell(
-                        onTap: _navigateToUpload,
-                        borderRadius: BorderRadius.circular(16),
-                        child: Container(
-                          padding: const EdgeInsets.all(24),
-                          child: Column(
-                            children: const [
-                              Icon(
-                                Icons.upload_file,
-                                size: 64,
-                                color: Colors.blue,
-                              ),
-                              SizedBox(height: 16),
-                              Text(
-                                'Upload Floorplan',
-                                style: TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              SizedBox(height: 8),
-                              Text(
-                                'Tap to upload a building floorplan',
-                                style: TextStyle(color: Colors.grey),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 32),
+            const Text(
+              'What would you like to do?',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 16),
 
-                    // Your floorplans section
-                    const Text(
-                      'Your Floorplans',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Floorplans list
-                    StreamBuilder<List<FloorplanModel>>(
-                      stream: _floorplanService.getUserFloorplans(),
-                      builder: (context, snapshot) {
-                        if (snapshot.connectionState ==
-                            ConnectionState.waiting) {
-                          return const Center(
-                            child: CircularProgressIndicator(),
-                          );
-                        }
-
-                        if (snapshot.hasError) {
-                          return Center(
-                            child: Text('Error: ${snapshot.error}'),
-                          );
-                        }
-
-                        final floorplans = snapshot.data ?? [];
-
-                        if (floorplans.isEmpty) {
-                          return const Center(
-                            child: Padding(
-                              padding: EdgeInsets.all(32.0),
-                              child: Text(
-                                'No floorplans yet.\nUpload one to get started!',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(color: Colors.grey),
-                              ),
-                            ),
-                          );
-                        }
-
-                        return ListView.builder(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          itemCount: floorplans.length,
-                          itemBuilder: (context, index) {
-                            final floorplan = floorplans[index];
-                            return _buildFloorplanCard(floorplan);
-                          },
-                        );
-                      },
-                    ),
-                  ],
+            // ── Admin card ─────────────────────────────────────────────────
+            _ActionCard(
+              icon: Icons.business,
+              iconColor: Colors.blue,
+              iconBg: Colors.blue.shade50,
+              title: 'Manage Buildings',
+              subtitle:
+                  'Create buildings, upload floorplans,\nmap rooms & generate QR codes',
+              buttonLabel: 'Open Buildings',
+              buttonColor: Colors.blue,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => BuildingManagementScreen(userId: _userId),
                 ),
               ),
             ),
-    );
-  }
 
-  Widget _buildFloorplanCard(FloorplanModel floorplan) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 16),
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: InkWell(
-        onTap: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => FloorplanDetailScreen(floorplan: floorplan),
-            ),
-          );
-        },
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Row(
-            children: [
-              // Thumbnail
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: _buildThumbnail(floorplan.imageUrl),
-              ),
-              const SizedBox(width: 16),
+            const SizedBox(height: 16),
 
-              // Details
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      floorplan.buildingName,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Floor ${floorplan.floorNumber}',
-                      style: const TextStyle(color: Colors.grey),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        _buildStatusChip(floorplan.status),
-                        const SizedBox(width: 8),
-                        if (MockStorageService.isMockUrl(floorplan.imageUrl))
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.orange.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: const Text(
-                              'Local',
-                              style: TextStyle(
-                                color: Colors.orange,
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ],
+            // ── Visitor card ───────────────────────────────────────────────
+            _ActionCard(
+              icon: Icons.qr_code_scanner,
+              iconColor: Colors.green,
+              iconBg: Colors.green.shade50,
+              title: 'Find a Room',
+              subtitle:
+                  'Scan a building\'s QR code to access\nfloor maps and navigate to any room',
+              buttonLabel: 'Scan QR Code',
+              buttonColor: Colors.green,
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => QRScannerScreen(userId: _userId),
                 ),
               ),
+            ),
 
-              // Arrow icon
-              const Icon(Icons.chevron_right, color: Colors.grey),
-            ],
-          ),
+            const SizedBox(height: 32),
+
+            // ── How it works ───────────────────────────────────────────────
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Theme.of(context).cardTheme.color,
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.05),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.info_outline, color: Colors.blue, size: 20),
+                      SizedBox(width: 8),
+                      Text(
+                        'How It Works',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  _HowItWorksStep(
+                    number: '1',
+                    text:
+                        'Admin creates a building and uploads floorplans for each floor',
+                  ),
+                  _HowItWorksStep(
+                    number: '2',
+                    text: 'Admin maps rooms by tapping on the floorplan',
+                  ),
+                  _HowItWorksStep(
+                    number: '3',
+                    text:
+                        'Admin generates & prints one QR code for the building entrance',
+                  ),
+                  _HowItWorksStep(
+                    number: '4',
+                    text:
+                        'Visitors scan the QR code to access all floors and navigate to any room',
+                    isLast: true,
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
+}
 
-  Widget _buildThumbnail(String imageUrl) {
-    if (MockStorageService.isMockUrl(imageUrl)) {
-      // Load from local file
-      final mockStorage = MockStorageService();
-      final localFile = mockStorage.getLocalFile(imageUrl);
+class _ActionCard extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+  final Color iconBg;
+  final String title;
+  final String subtitle;
+  final String buttonLabel;
+  final Color buttonColor;
+  final VoidCallback onTap;
 
-      return Image.file(
-        localFile,
-        width: 80,
-        height: 80,
-        fit: BoxFit.cover,
-        errorBuilder: (context, error, stackTrace) {
-          return Container(
-            width: 80,
-            height: 80,
-            color: Colors.grey[300],
-            child: const Icon(Icons.error),
-          );
-        },
-      );
-    } else {
-      // Load from network
-      return Image.network(
-        imageUrl,
-        width: 80,
-        height: 80,
-        fit: BoxFit.cover,
-        loadingBuilder: (context, child, loadingProgress) {
-          if (loadingProgress == null) return child;
-          return Container(
-            width: 80,
-            height: 80,
-            color: Colors.grey[200],
-            child: const Center(
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-          );
-        },
-        errorBuilder: (context, error, stackTrace) {
-          return Container(
-            width: 80,
-            height: 80,
-            color: Colors.grey[300],
-            child: const Icon(Icons.error),
-          );
-        },
-      );
-    }
-  }
+  const _ActionCard({
+    required this.icon,
+    required this.iconColor,
+    required this.iconBg,
+    required this.title,
+    required this.subtitle,
+    required this.buttonLabel,
+    required this.buttonColor,
+    required this.onTap,
+  });
 
-  Widget _buildStatusChip(String status) {
-    Color color;
-    String text;
-
-    switch (status) {
-      case 'ready':
-        color = Colors.green;
-        text = 'Ready';
-        break;
-      case 'processing':
-        color = Colors.orange;
-        text = 'Processing';
-        break;
-      case 'failed':
-        color = Colors.red;
-        text = 'Failed';
-        break;
-      default:
-        color = Colors.blue;
-        text = 'Uploaded';
-    }
-
+  @override
+  Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
+        color: Theme.of(context).cardTheme.color,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
-      child: Text(
-        text,
-        style: TextStyle(
-          color: color,
-          fontSize: 12,
-          fontWeight: FontWeight.bold,
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Row(
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                color: iconBg,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Icon(icon, color: iconColor, size: 28),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: Colors.grey,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: onTap,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: buttonColor,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        elevation: 0,
+                      ),
+                      child: Text(
+                        buttonLabel,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
+      ),
+    );
+  }
+}
+
+class _HowItWorksStep extends StatelessWidget {
+  final String number;
+  final String text;
+  final bool isLast;
+
+  const _HowItWorksStep({
+    required this.number,
+    required this.text,
+    this.isLast = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: isLast ? 0 : 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 24,
+            height: 24,
+            decoration: BoxDecoration(
+              color: Colors.blue,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Center(
+              child: Text(
+                number,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(fontSize: 14, height: 1.4),
+            ),
+          ),
+        ],
       ),
     );
   }

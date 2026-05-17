@@ -12,8 +12,13 @@ import 'package:planova_mobile/widgets/google_maps_3d_view.dart';
 
 class NavigationScreen extends StatefulWidget {
   final FloorplanModel floorplan;
+  final GridPoint? destination;
 
-  const NavigationScreen({Key? key, required this.floorplan}) : super(key: key);
+  const NavigationScreen({
+    Key? key,
+    required this.floorplan,
+    this.destination, // ✅ add this
+  }) : super(key: key);
 
   @override
   State<NavigationScreen> createState() => _NavigationScreenState();
@@ -33,12 +38,12 @@ class _NavigationScreenState extends State<NavigationScreen> {
   bool _isLoading = true;
   bool _isCalculating = false;
   bool _isNavigating = false;
-  bool _showRecenter = false; // shown when user pans away during navigation
+  bool _showRecenter = false;
 
   StreamSubscription? _positionSubscription;
   StreamSubscription? _headingSubscription;
 
-  double _heading = 0.0; // live gyro/compass heading in degrees
+  double _heading = 0.0;
 
   /// When true: floorplan stays north-up, only the arrow rotates.
   /// When false (default): whole map rotates with heading (follow mode).
@@ -53,7 +58,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
   final GlobalKey _imageKey = GlobalKey();
   bool _boundsCalculated = false;
 
-  // Controller callback so NavigationScreen can trigger recenter on the map
   VoidCallback? _recenterCallback;
 
   @override
@@ -70,88 +74,93 @@ class _NavigationScreenState extends State<NavigationScreen> {
     super.dispose();
   }
 
-  // ── Permissions ────────────────────────────────────────────────────────────
+  // ── Permissions ─────────────────────────────────────────────────────────────
+  // FIX: Permission.sensors does not exist in permission_handler.
+  // Use locationWhenInUse only — it covers compass on iOS.
+  // Accelerometer/gyro require no runtime permission on Android or iOS.
 
   Future<void> _requestPermissions() async {
-    // sensors_plus needs no runtime permission on Android/iOS for accelerometer.
-    // flutter_compass needs location permission on iOS; on Android it just works.
-    // We request location (needed for compass on iOS) and show a rationale first.
+    final status = await Permission.locationWhenInUse.request();
 
-    final statuses = await [
-      Permission.sensors,
-      Permission.locationWhenInUse,
-    ].request();
-
-    final allGranted = statuses.values.every(
-      (s) => s == PermissionStatus.granted || s == PermissionStatus.limited,
-    );
-
-    if (mounted) {
-      if (!allGranted) {
-        // Some denied — show a dialog explaining why we need them
-        await showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (_) => AlertDialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-            title: const Row(
-              children: [
-                Icon(Icons.sensors, color: Color(0xFF1A73E8)),
-                SizedBox(width: 10),
-                Text('Sensors needed'),
-              ],
-            ),
-            content: const Text(
-              'Indoor navigation uses your device\'s motion sensors and compass '
-              'to track your position and heading.\n\n'
-              'Please grant Sensors and Location access so the navigation arrow '
-              'follows your real movement.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Skip'),
-              ),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF1A73E8),
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
-                onPressed: () {
-                  Navigator.pop(context);
-                  openAppSettings();
-                },
-                child: const Text('Open Settings'),
-              ),
+    if (mounted && status.isDenied) {
+      await showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: const Row(
+            children: [
+              Icon(Icons.sensors, color: Color(0xFF1A73E8)),
+              SizedBox(width: 10),
+              Text('Sensors needed'),
             ],
           ),
-        );
-      }
+          content: const Text(
+            'Indoor navigation uses your device\'s motion sensors and compass '
+            'to track your position and heading.\n\n'
+            'Please grant Location access so the navigation arrow '
+            'follows your real movement.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Skip'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF1A73E8),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              onPressed: () {
+                Navigator.pop(context);
+                openAppSettings();
+              },
+              child: const Text('Open Settings'),
+            ),
+          ],
+        ),
+      );
     }
   }
 
-  // ── Floorplan loading ──────────────────────────────────────────────────────
+  // ── Floorplan loading ───────────────────────────────────────────────────────
 
   Future<void> _loadFloorplanData() async {
     try {
       final processedData = widget.floorplan.processedData;
-      if (processedData == null) throw 'Floorplan not processed yet';
+
+      if (processedData == null) {
+        throw 'Floorplan not processed yet';
+      }
 
       final gridModel = GridModel.fromJson(processedData);
+
       setState(() {
         _gridModel = gridModel;
         _isLoading = false;
+
+        // ✅ Auto-set destination if provided
+        if (widget.destination != null) {
+          _endPoint = widget.destination;
+        }
       });
+
+      // ✅ Auto-calculate route if destination exists
+      if (_startPoint != null && _endPoint != null) {
+        _calculateRoute();
+      }
+
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _calculateImageBounds(),
       );
     } catch (e) {
       debugPrint('❌ [NAV] Error loading floorplan: $e');
+
       setState(() => _isLoading = false);
     }
   }
@@ -190,7 +199,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     });
   }
 
-  // ── Tap handling ───────────────────────────────────────────────────────────
+  // ── Tap handling ────────────────────────────────────────────────────────────
 
   void _handleTap(TapDownDetails details) {
     if (_gridModel == null || _isNavigating) return;
@@ -232,6 +241,16 @@ class _NavigationScreenState extends State<NavigationScreen> {
     setState(() {
       if (_startPoint == null) {
         _startPoint = pt;
+
+        // ✅ If destination already provided,
+        // auto-calculate immediately
+        if (_endPoint != null) {
+          _calculateRoute();
+        }
+      } else if (widget.destination != null) {
+        // ✅ Destination locked from room selection
+        _startPoint = pt;
+        _calculateRoute();
       } else if (_endPoint == null) {
         _endPoint = pt;
         _calculateRoute();
@@ -239,7 +258,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     });
   }
 
-  // ── Route calculation ──────────────────────────────────────────────────────
+  // ── Route calculation ───────────────────────────────────────────────────────
 
   Future<void> _calculateRoute() async {
     if (_gridModel == null || _startPoint == null || _endPoint == null) return;
@@ -259,8 +278,9 @@ class _NavigationScreenState extends State<NavigationScreen> {
         _route = route;
         _isCalculating = false;
       });
-      if (route == null)
+      if (route == null) {
         _snack('❌ No path found between these points', Colors.red);
+      }
     } catch (e) {
       debugPrint('❌ [NAV] Route error: $e');
       setState(() => _isCalculating = false);
@@ -277,7 +297,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     });
   }
 
-  // ── Navigation ─────────────────────────────────────────────────────────────
+  // ── Navigation ──────────────────────────────────────────────────────────────
 
   void _startNavigation() {
     if (_route == null || _startPoint == null) return;
@@ -288,7 +308,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
       _currentStepIndex = 0;
     });
 
-    // Subscribe to live compass/gyro heading
     _headingSubscription?.cancel();
     _headingSubscription = _positioningService.headingStream.listen((degrees) {
       if (mounted) setState(() => _heading = degrees);
@@ -336,7 +355,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     setState(() => _showRecenter = false);
   }
 
-  // ── Coordinate helpers ─────────────────────────────────────────────────────
+  // ── Coordinate helpers ──────────────────────────────────────────────────────
 
   double _getScreenX(int col) {
     if (_imageDisplaySize == null ||
@@ -362,7 +381,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     return imageY * scaleY + _imageDisplayOffset!.dy;
   }
 
-  // ── HUD helpers ────────────────────────────────────────────────────────────
+  // ── HUD helpers ─────────────────────────────────────────────────────────────
 
   String _formatDistance() {
     if (_route == null) return '0 m';
@@ -410,7 +429,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     );
   }
 
-  // ── Build ──────────────────────────────────────────────────────────────────
+  // ── Build ───────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -436,7 +455,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
           ? const Center(child: CircularProgressIndicator())
           : Stack(
               children: [
-                // ── Full-screen map ──────────────────────────────────────
+                // ── Full-screen map ────────────────────────────────────────
                 Positioned.fill(
                   child: LayoutBuilder(
                     builder: (ctx, constraints) {
@@ -493,7 +512,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                   ),
                 ),
 
-                // ── Top instruction banner (nav only) ────────────────────
+                // ── Top instruction banner (nav only) ──────────────────────
                 if (_isNavigating)
                   Positioned(
                     top: MediaQuery.of(context).padding.top + 12,
@@ -502,7 +521,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                     child: _buildTopBanner(),
                   ),
 
-                // ── Status chips (pre-nav) ───────────────────────────────
+                // ── Status chips (pre-nav) ─────────────────────────────────
                 if (!_isNavigating)
                   Positioned(
                     top:
@@ -514,7 +533,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                     child: _buildStatusChips(),
                   ),
 
-                // ── Re-center button (nav only, shown when user panned) ──
+                // ── Re-center button ───────────────────────────────────────
                 if (_isNavigating && _showRecenter)
                   Positioned(
                     left: 16,
@@ -522,7 +541,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                     child: _buildRecenterButton(),
                   ),
 
-                // ── Bottom HUD ───────────────────────────────────────────
+                // ── Bottom HUD ─────────────────────────────────────────────
                 Positioned(
                   left: 0,
                   right: 0,
@@ -534,7 +553,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     );
   }
 
-  // ── Top banner ─────────────────────────────────────────────────────────────
+  // ── Top banner ──────────────────────────────────────────────────────────────
 
   Widget _buildTopBanner() {
     String instruction = _currentPosition == _startPoint
@@ -614,7 +633,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
                 ],
               ),
             ),
-            // Compass / north indicator
             Container(
               width: 36,
               height: 36,
@@ -640,7 +658,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     );
   }
 
-  // ── Re-center button ───────────────────────────────────────────────────────
+  // ── Re-center button ────────────────────────────────────────────────────────
 
   Widget _buildRecenterButton() {
     return GestureDetector(
@@ -658,9 +676,9 @@ class _NavigationScreenState extends State<NavigationScreen> {
             ),
           ],
         ),
-        child: Row(
+        child: const Row(
           mainAxisSize: MainAxisSize.min,
-          children: const [
+          children: [
             Icon(Icons.navigation, color: Color(0xFF1C6B45), size: 18),
             SizedBox(width: 8),
             Text(
@@ -677,7 +695,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     );
   }
 
-  // ── Status chips ───────────────────────────────────────────────────────────
+  // ── Status chips ────────────────────────────────────────────────────────────
 
   Widget _buildStatusChips() {
     if (_startPoint == null) return const SizedBox.shrink();
@@ -726,7 +744,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     );
   }
 
-  // ── Nav HUD (Google Maps bottom bar) ──────────────────────────────────────
+  // ── Nav HUD ─────────────────────────────────────────────────────────────────
 
   Widget _buildNavHud() {
     return Container(
@@ -750,7 +768,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Drag handle
           Container(
             width: 36,
             height: 4,
@@ -763,7 +780,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              // ETA + distance
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -786,13 +802,10 @@ class _NavigationScreenState extends State<NavigationScreen> {
                 ),
               ),
               const SizedBox(width: 12),
-              // My-location icon
               _hudIconBtn(Icons.my_location, _recenter),
               const SizedBox(width: 10),
-              // Top-down / follow-mode toggle
               _hudToggleBtn(),
               const SizedBox(width: 10),
-              // Exit pill
               GestureDetector(
                 onTap: _stopNavigation,
                 child: Container(
@@ -851,7 +864,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
     );
   }
 
-  /// Toggle between "follow heading" mode and "top-down" (north-up) mode.
   Widget _hudToggleBtn() {
     final isTopDown = _topDownMode;
     return GestureDetector(
@@ -862,7 +874,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
           width: 46,
           height: 46,
           decoration: BoxDecoration(
-            // Highlight when top-down is active so the user knows which mode is on
             color: isTopDown ? const Color(0xFF1A73E8) : Colors.white,
             shape: BoxShape.circle,
             border: Border.all(
@@ -877,7 +888,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
             ],
           ),
           child: Icon(
-            // north icon = top-down, navigation icon = follow mode
             isTopDown ? Icons.explore : Icons.navigation,
             color: isTopDown ? Colors.white : Colors.grey[700],
             size: 22,
@@ -887,7 +897,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     );
   }
 
-  // ── Pre-nav panel ──────────────────────────────────────────────────────────
+  // ── Pre-nav panel ───────────────────────────────────────────────────────────
 
   Widget _buildPreNavPanel() {
     return Container(
@@ -1013,7 +1023,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     );
   }
 
-  // ── Floorplan image ────────────────────────────────────────────────────────
+  // ── Floorplan image ─────────────────────────────────────────────────────────
 
   Widget _buildFloorplanImage() {
     final url = widget.floorplan.imageUrl;
