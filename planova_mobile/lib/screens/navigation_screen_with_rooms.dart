@@ -6,6 +6,11 @@ import 'package:planova_mobile/models/floorplan_model.dart';
 import 'package:planova_mobile/models/grid_model.dart';
 import 'package:planova_mobile/screens/navigation_screen.dart';
 
+/// NavigationScreenWithRooms
+///
+/// This is a thin adapter — it constructs a FloorplanModel from the
+/// Floor/Building data and forwards to NavigationScreen.
+/// Visual styling comes from AppTheme applied in NavigationScreen itself.
 class NavigationScreenWithRooms extends StatelessWidget {
   final BuildingModel building;
   final FloorModel floor;
@@ -31,7 +36,6 @@ class NavigationScreenWithRooms extends StatelessWidget {
       userId: building.createdBy,
     );
 
-    // ✅ Pass destination GridPoint directly to NavigationScreen
     final destination = targetRoom != null
         ? GridPoint(
             row: targetRoom!.gridPoint.row,

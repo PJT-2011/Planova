@@ -7,6 +7,7 @@ import 'package:planova_mobile/screens/room_mapping_screen.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:io';
+import 'package:uuid/uuid.dart';
 
 class FloorManagementScreen extends StatefulWidget {
   final BuildingModel building;
@@ -148,8 +149,10 @@ class _FloorManagementScreenState extends State<FloorManagementScreen> {
       }
 
       // ✅ Generate ONE floorId used for both
-      // Storage path AND Firestore doc
-      final floorId = 'flr_${DateTime.now().millisecondsSinceEpoch}';
+      // Storage path AND Firestore doc.
+      // uuid v4 guarantees uniqueness even when uploads happen
+      // within the same millisecond (timestamp IDs would collide).
+      final floorId = 'flr_${const Uuid().v4().substring(0, 8)}';
 
       final ext = image.path.split('.').last.toLowerCase();
 

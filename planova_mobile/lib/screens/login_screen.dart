@@ -22,6 +22,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   bool _isLoading = false;
   bool _isGoogleLoading = false;
+  bool _isGuestLoading = false;
   bool _obscurePassword = true;
 
   @override
@@ -55,7 +56,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
       if (!mounted) return;
 
-      // Email/password users must verify their email
       final verified = await _authService.isEmailVerified();
       if (!verified) {
         await _authService.sendEmailVerification();
@@ -91,8 +91,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       final result = await _authService.signInWithGoogle();
-
-      // null = user cancelled the Google picker — do nothing
       if (result == null) return;
 
       if (!mounted) return;
@@ -112,16 +110,38 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  void _continueAsGuest() {
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => const GuestHomeScreen()),
-    );
+  // ── Guest sign-in (anonymous Firebase Auth) ───────────────────────────────
+  Future<void> _continueAsGuest() async {
+    setState(() => _isGuestLoading = true);
+
+    try {
+      // Sign in anonymously so Firestore rules (request.auth != null) pass
+      final credential = await _authService.signInAnonymously();
+      if (!mounted) return;
+
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => GuestHomeScreen(userId: credential.user!.uid),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to continue as guest: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isGuestLoading = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final anyLoading = _isLoading || _isGoogleLoading;
+    final anyLoading = _isLoading || _isGoogleLoading || _isGuestLoading;
 
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
@@ -283,7 +303,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               'Continue with Google',
                               style: TextStyle(
                                 fontSize: 15,
-                                fontWeight: FontWeight.w500,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
                           ],
@@ -294,7 +314,13 @@ class _LoginScreenState extends State<LoginScreen> {
                 // ── Guest button ──────────────────────────────────────────
                 OutlinedButton.icon(
                   onPressed: anyLoading ? null : _continueAsGuest,
-                  icon: const Icon(Icons.person_outline),
+                  icon: _isGuestLoading
+                      ? const SizedBox(
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.person_outline),
                   label: const Text(
                     'Continue as Guest',
                     style: TextStyle(fontSize: 15),
@@ -362,7 +388,6 @@ class _GoogleIconPainter extends CustomPainter {
     final center = rect.center;
     final radius = size.width / 2;
 
-    // Colours
     const blue = Color(0xFF4285F4);
     const red = Color(0xFFEA4335);
     const yellow = Color(0xFFFBBC05);
@@ -370,28 +395,18 @@ class _GoogleIconPainter extends CustomPainter {
 
     final paint = Paint()..style = PaintingStyle.fill;
 
-    // Draw four coloured arcs (simplified Google logo)
-    // Blue arc (right side)
     paint.color = blue;
     canvas.drawArc(rect, -0.5, 1.6, true, paint);
-
-    // Red arc (top-left)
     paint.color = red;
     canvas.drawArc(rect, 3.14, 1.1, true, paint);
-
-    // Yellow arc (bottom-left)
     paint.color = yellow;
     canvas.drawArc(rect, 4.25, 0.9, true, paint);
-
-    // Green arc (bottom-right)
     paint.color = green;
     canvas.drawArc(rect, 2.2, 0.9, true, paint);
 
-    // White centre circle
     paint.color = Colors.white;
     canvas.drawCircle(center, radius * 0.55, paint);
 
-    // Blue bar on the right (the crossbar of the G)
     paint.color = blue;
     canvas.drawRect(
       Rect.fromLTWH(

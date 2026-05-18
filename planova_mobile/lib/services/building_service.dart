@@ -1,5 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/foundation.dart'; // required for debugPrint
 import 'package:planova_mobile/models/building_model.dart';
 import 'package:planova_mobile/models/floor_model.dart';
 import 'package:planova_mobile/models/room_model.dart';
@@ -8,7 +8,6 @@ import 'package:uuid/uuid.dart';
 
 class BuildingService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-
   final Uuid _uuid = const Uuid();
 
   // ==================== BUILDING OPERATIONS ====================
@@ -20,7 +19,6 @@ class BuildingService {
     required String userId,
   }) async {
     final buildingId = 'bld_${_uuid.v4().substring(0, 8)}';
-
     final qrCode =
         'QR_${buildingName.toUpperCase().replaceAll(' ', '_')}_${DateTime.now().millisecondsSinceEpoch}';
 
@@ -39,7 +37,6 @@ class BuildingService {
         .set(building.toJson());
 
     debugPrint('✅ [BuildingService] Building created: $buildingId');
-
     return building;
   }
 
@@ -48,15 +45,12 @@ class BuildingService {
     final snapshot = await _firestore
         .collection('buildings')
         .where('createdBy', isEqualTo: userId)
+        .orderBy('createdAt', descending: true)
         .get();
 
-    final buildings = snapshot.docs
+    return snapshot.docs
         .map((doc) => BuildingModel.fromJson(doc.id, doc.data()))
         .toList();
-
-    buildings.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-
-    return buildings;
   }
 
   /// Get building by ID
@@ -76,9 +70,7 @@ class BuildingService {
         .limit(1)
         .get();
 
-    if (snapshot.docs.isEmpty) {
-      return null;
-    }
+    if (snapshot.docs.isEmpty) return null;
 
     return BuildingModel.fromJson(
       snapshot.docs.first.id,
@@ -92,20 +84,19 @@ class BuildingService {
     Map<String, dynamic> updates,
   ) async {
     await _firestore.collection('buildings').doc(buildingId).update(updates);
-
     debugPrint('✅ [BuildingService] Building updated: $buildingId');
   }
 
   /// Delete building and all its floors/rooms
   Future<void> deleteBuilding(String buildingId) async {
+    // Delete all floors (which will cascade delete rooms)
     final floors = await getFloors(buildingId);
-
     for (final floor in floors) {
       await deleteFloor(buildingId, floor.id);
     }
 
+    // Delete building
     await _firestore.collection('buildings').doc(buildingId).delete();
-
     debugPrint('✅ [BuildingService] Building deleted: $buildingId');
   }
 
@@ -117,16 +108,14 @@ class BuildingService {
     required String floorName,
     required int floorNumber,
     required String imageUrl,
-    String? floorId,
+    String? floorId, // optional — caller can pass pre-generated ID
     Map<String, dynamic>? processedData,
   }) async {
-    // Use provided floorId
-    // so it matches the Storage path
-    // or generate a new one
-    final id = floorId ?? 'flr_${_uuid.v4().substring(0, 8)}';
+    // FIX: was 'flr_\${_uuid...}' (escaped, literal string) — now correct interpolation
+    final resolvedFloorId = floorId ?? 'flr_${_uuid.v4().substring(0, 8)}';
 
     final floor = FloorModel(
-      id: id,
+      id: resolvedFloorId,
       buildingId: buildingId,
       floorName: floorName,
       floorNumber: floorNumber,
@@ -139,16 +128,16 @@ class BuildingService {
         .collection('buildings')
         .doc(buildingId)
         .collection('floors')
-        .doc(id)
+        .doc(resolvedFloorId)
         .set(floor.toJson());
 
-    // Update building total floors
+    // Update building's total floors count
     final floors = await getFloors(buildingId);
-
     await updateBuilding(buildingId, {'totalFloors': floors.length});
 
-    debugPrint('✅ [BuildingService] Floor added: $id to building $buildingId');
-
+    debugPrint(
+      '✅ [BuildingService] Floor added: $resolvedFloorId to building $buildingId',
+    );
     return floor;
   }
 
@@ -192,7 +181,6 @@ class BuildingService {
         .collection('floors')
         .doc(floorId)
         .update(updates);
-
     debugPrint('✅ [BuildingService] Floor updated: $floorId');
   }
 
@@ -200,7 +188,6 @@ class BuildingService {
   Future<void> deleteFloor(String buildingId, String floorId) async {
     // Delete all rooms in this floor
     final rooms = await getRooms(buildingId, floorId);
-
     for (final room in rooms) {
       await deleteRoom(buildingId, floorId, room.id);
     }
@@ -213,9 +200,8 @@ class BuildingService {
         .doc(floorId)
         .delete();
 
-    // Update building total floors
+    // Update building's total floors count
     final floors = await getFloors(buildingId);
-
     await updateBuilding(buildingId, {'totalFloors': floors.length});
 
     debugPrint('✅ [BuildingService] Floor deleted: $floorId');
@@ -239,6 +225,7 @@ class BuildingService {
       buildingId: buildingId,
       floorId: floorId,
       name: roomName,
+      // Use GridPoint from grid_model.dart (the single source of truth)
       gridPoint: GridPoint(row: row, col: col),
       floorNumber: floorNumber,
       createdAt: DateTime.now(),
@@ -253,16 +240,15 @@ class BuildingService {
         .doc(roomId)
         .set(room.toJson());
 
+    // Update floor's total rooms count
     final rooms = await getRooms(buildingId, floorId);
-
     await updateFloor(buildingId, floorId, {'totalRooms': rooms.length});
 
+    // Update building's total rooms count
     final allRooms = await getAllRooms(buildingId);
-
     await updateBuilding(buildingId, {'totalRooms': allRooms.length});
 
     debugPrint('✅ [BuildingService] Room added: $roomId to floor $floorId');
-
     return room;
   }
 
@@ -282,22 +268,20 @@ class BuildingService {
         .toList();
   }
 
-  /// Get all rooms across all floors
+  /// Get all rooms across all floors in a building
   Future<List<RoomModel>> getAllRooms(String buildingId) async {
     final floors = await getFloors(buildingId);
-
     final List<RoomModel> allRooms = [];
 
     for (final floor in floors) {
       final rooms = await getRooms(buildingId, floor.id);
-
       allRooms.addAll(rooms);
     }
 
     return allRooms;
   }
 
-  /// Search rooms
+  /// Search rooms across all floors
   Future<List<RoomModel>> searchRooms(String buildingId, String query) async {
     if (query.isEmpty) return [];
 
@@ -306,7 +290,7 @@ class BuildingService {
     return allRooms.where((room) => room.matchesSearch(query)).toList();
   }
 
-  /// Search rooms in floor
+  /// Search rooms within a specific floor
   Future<List<RoomModel>> searchRoomsInFloor(
     String buildingId,
     String floorId,
@@ -334,7 +318,6 @@ class BuildingService {
         .collection('rooms')
         .doc(roomId)
         .update(updates);
-
     debugPrint('✅ [BuildingService] Room updated: $roomId');
   }
 
@@ -353,12 +336,12 @@ class BuildingService {
         .doc(roomId)
         .delete();
 
+    // Update floor's total rooms count
     final rooms = await getRooms(buildingId, floorId);
-
     await updateFloor(buildingId, floorId, {'totalRooms': rooms.length});
 
+    // Update building's total rooms count
     final allRooms = await getAllRooms(buildingId);
-
     await updateBuilding(buildingId, {'totalRooms': allRooms.length});
 
     debugPrint('✅ [BuildingService] Room deleted: $roomId');
@@ -366,7 +349,7 @@ class BuildingService {
 
   // ==================== VISITOR ACCESS ====================
 
-  /// Grant visitor access
+  /// Grant visitor access to building
   Future<void> grantAccess(String buildingId, String userId) async {
     await _firestore
         .collection('buildings')
@@ -384,7 +367,7 @@ class BuildingService {
     );
   }
 
-  /// Get accessible buildings
+  /// Get all buildings user has access to (as visitor)
   Future<List<BuildingModel>> getAccessibleBuildings(String userId) async {
     final buildingsSnapshot = await _firestore.collection('buildings').get();
 

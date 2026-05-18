@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:planova_mobile/models/building_model.dart';
 import 'package:planova_mobile/services/building_service.dart';
+import 'package:planova_mobile/services/recent_building_service.dart';
 import 'package:planova_mobile/screens/floor_selection_screen.dart';
 
 class QRScannerScreen extends StatefulWidget {
@@ -15,6 +16,7 @@ class QRScannerScreen extends StatefulWidget {
 
 class _QRScannerScreenState extends State<QRScannerScreen> {
   final BuildingService _buildingService = BuildingService();
+  final RecentBuildingService _recentService = RecentBuildingService();
   final MobileScannerController _controller = MobileScannerController();
 
   bool _isProcessing = false;
@@ -49,6 +51,10 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
       }
 
       await _buildingService.grantAccess(building.id, widget.userId);
+
+      // ✅ Save to recent buildings history
+      await _recentService.saveRecentBuilding(widget.userId, building);
+
       _showSuccessDialog(building);
     } catch (e) {
       debugPrint('❌ [QRScanner] Error processing QR code: $e');

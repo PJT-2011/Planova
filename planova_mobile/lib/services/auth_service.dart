@@ -25,7 +25,6 @@ class AuthService {
       UserCredential userCredential = await _auth
           .createUserWithEmailAndPassword(email: email, password: password);
 
-      // Send verification email immediately after signup
       await userCredential.user?.sendEmailVerification();
 
       await _firestore.collection('users').doc(userCredential.user!.uid).set({
@@ -59,9 +58,10 @@ class AuthService {
         password: password,
       );
 
-      await _firestore.collection('users').doc(userCredential.user!.uid).update(
-        {'lastLogin': FieldValue.serverTimestamp()},
-      );
+      // ✅ use set+merge so it works even if the doc was deleted
+      await _firestore.collection('users').doc(userCredential.user!.uid).set({
+        'lastLogin': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
 
       return userCredential;
     } on FirebaseAuthException catch (e) {
@@ -71,10 +71,20 @@ class AuthService {
     }
   }
 
+  // ── Sign in anonymously (guest) ───────────────────────────────────────────
+  Future<UserCredential> signInAnonymously() async {
+    try {
+      final credential = await _auth.signInAnonymously();
+      debugPrint('✅ [AuthService] Anonymous sign-in: ${credential.user?.uid}');
+      return credential;
+    } on FirebaseAuthException catch (e) {
+      throw _handleAuthException(e);
+    } catch (e) {
+      throw 'Failed to continue as guest. Please try again.';
+    }
+  }
+
   // ── Sign in with Google ───────────────────────────────────────────────────
-  /// Returns [UserCredential] on success.
-  /// Returns null if the user cancelled the Google picker.
-  /// Throws a human-readable [String] on failure.
   Future<UserCredential?> signInWithGoogle() async {
     try {
       debugPrint('🔵 [Google] Starting sign-in...');
@@ -89,16 +99,11 @@ class AuthService {
       final GoogleSignInAuthentication googleAuth =
           await googleUser.authentication;
 
-      debugPrint(
-        '🔵 [Google] AccessToken: ${googleAuth.accessToken != null}, IdToken: ${googleAuth.idToken != null}',
-      );
-
       final OAuthCredential credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
       );
 
-      // Sign in to Firebase
       final UserCredential userCredential = await _auth.signInWithCredential(
         credential,
       );
@@ -107,7 +112,6 @@ class AuthService {
       final isNewUser = userCredential.additionalUserInfo?.isNewUser ?? false;
 
       if (isNewUser) {
-        // First sign-in — create Firestore record
         await _firestore.collection('users').doc(user.uid).set({
           'userId': user.uid,
           'email': user.email ?? '',
@@ -120,11 +124,11 @@ class AuthService {
           'provider': 'google',
         });
       } else {
-        // Returning user — update last login and photo
-        await _firestore.collection('users').doc(user.uid).update({
+        // ✅ use set+merge so it works even if the doc was deleted
+        await _firestore.collection('users').doc(user.uid).set({
           'lastLogin': FieldValue.serverTimestamp(),
           'photoUrl': user.photoURL,
-        });
+        }, SetOptions(merge: true));
       }
 
       return userCredential;
@@ -140,7 +144,6 @@ class AuthService {
   // ── Sign out ──────────────────────────────────────────────────────────────
   Future<void> signOut() async {
     try {
-      // Sign out of Google session too so the picker shows next time
       if (await _googleSignIn.isSignedIn()) {
         await _googleSignIn.signOut();
       }
@@ -187,7 +190,10 @@ class AuthService {
 
   // ── Update display name ───────────────────────────────────────────────────
   Future<void> updateName(String userId, String newName) async {
-    await _firestore.collection('users').doc(userId).update({'name': newName});
+    // ✅ use set+merge so it works even if the doc was deleted
+    await _firestore.collection('users').doc(userId).set({
+      'name': newName,
+    }, SetOptions(merge: true));
   }
 
   // ── Upload profile photo ──────────────────────────────────────────────────
@@ -195,7 +201,10 @@ class AuthService {
     final ref = _storage.ref('profile_photos/$userId.jpg');
     await ref.putFile(imageFile, SettableMetadata(contentType: 'image/jpeg'));
     final url = await ref.getDownloadURL();
-    await _firestore.collection('users').doc(userId).update({'photoUrl': url});
+    // ✅ use set+merge so it works even if the doc was deleted
+    await _firestore.collection('users').doc(userId).set({
+      'photoUrl': url,
+    }, SetOptions(merge: true));
     return url;
   }
 
@@ -218,6 +227,8 @@ class AuthService {
         return 'Too many attempts. Please try again later.';
       case 'account-exists-with-different-credential':
         return 'An account already exists with a different sign-in method for this email.';
+      case 'operation-not-allowed':
+        return 'Guest access is not enabled. Please contact support.';
       default:
         return 'Authentication failed: ${e.message}';
     }

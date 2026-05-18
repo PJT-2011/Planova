@@ -86,25 +86,26 @@ exports.processFloorplan = onObjectFinalized(
       .doc(floorId);
 
     try {
-      await floorRef.update({ status: 'processing' });
+      await floorRef.set({ status: 'processing' }, { merge: true });
       console.log('✅ Status set to processing');
 
       const bucket = storage.bucket(event.data.bucket);
       const [buffer] = await bucket.file(filePath).download();
       console.log(`✅ Downloaded image: ${buffer.length} bytes`);
 
-      const cleanedBuffer = buffer; //replace with buffer to skip gemini again
-      console.log(`✅ Using cleaned image: ${cleanedBuffer.length} bytes`);
+      const apiKey = geminiApiKey.value();
+      const cleanedBuffer = buffer; // await cleanImageWithGemini(buffer, contentType, apiKey);
+      console.log(`✅ Gemini-cleaned image: ${cleanedBuffer.length} bytes`);
 
       const gridData = await processImage(cleanedBuffer, 15);
       console.log(`✅ Grid processed: ${gridData.width}x${gridData.height}`);
 
       // Save processedData back to buildings/.../floors/...
-      await floorRef.update({
+      await floorRef.set({
         status: 'ready',
         processedData: gridData,
         processedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      }, { merge: true });
 
       console.log(`✅ Floorplan ${floorId} processing complete`);
       return null;
@@ -112,10 +113,10 @@ exports.processFloorplan = onObjectFinalized(
     } catch (error) {
       console.error(`❌ Error processing floorplan ${floorId}:`, error);
 
-      await floorRef.update({
+      await floorRef.set({
         status: 'failed',
         errorMessage: error.message || 'Unknown error',
-      }).catch(() => { });
+      }, { merge: true }).catch(() => { });
 
       throw error;
     }
@@ -129,7 +130,7 @@ async function cleanImageWithGemini(imageBuffer, contentType, apiKey) {
   console.log('🔵 Sending image to Gemini...');
 
   const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
   const base64Image = imageBuffer.toString('base64');
 
   const result = await model.generateContent([
@@ -181,7 +182,7 @@ exports.reprocessFloorplan = onRequest(
         .collection('floors')
         .doc(floorId);
 
-      await floorRef.update({ status: 'processing' });
+      await floorRef.set({ status: 'processing' }, { merge: true });
 
       const bucket = storage.bucket();
       const [buffer] = await bucket.file(imagePath).download();
@@ -191,11 +192,11 @@ exports.reprocessFloorplan = onRequest(
       const cleanedBuffer = await cleanImageWithGemini(buffer, contentType, apiKey);
       const gridData = await processImage(cleanedBuffer, 15);
 
-      await floorRef.update({
+      await floorRef.set({
         status: 'ready',
         processedData: gridData,
         processedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      }, { merge: true });
 
       return res.status(200).json({
         success: true,

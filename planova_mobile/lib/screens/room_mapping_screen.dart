@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:planova_mobile/models/building_model.dart';
 import 'package:planova_mobile/models/floor_model.dart';
@@ -5,6 +6,7 @@ import 'package:planova_mobile/models/room_model.dart';
 import 'package:planova_mobile/models/grid_model.dart';
 import 'package:planova_mobile/services/building_service.dart';
 import 'package:planova_mobile/services/mock_storage_service.dart';
+import 'package:planova_mobile/theme/app_theme.dart'; // ← your new theme file
 
 class RoomMappingScreen extends StatefulWidget {
   final BuildingModel building;
@@ -20,15 +22,22 @@ class RoomMappingScreen extends StatefulWidget {
   State<RoomMappingScreen> createState() => _RoomMappingScreenState();
 }
 
-class _RoomMappingScreenState extends State<RoomMappingScreen> {
+class _RoomMappingScreenState extends State<RoomMappingScreen>
+    with SingleTickerProviderStateMixin {
   final BuildingService _buildingService = BuildingService();
   final GlobalKey _imageKey = GlobalKey();
+  final TransformationController _transformController =
+      TransformationController();
+
+  // Rotation state
+  double _rotationBase = 0.0;
+  double _currentRotation = 0.0;
+  bool _isMultiTouch = false;
 
   GridModel? _gridModel;
   List<RoomModel> _rooms = [];
   bool _isLoading = true;
 
-  // Image display info for coordinate transformation
   Size? _imageDisplaySize;
   Offset? _imageDisplayOffset;
   Size? _imageOriginalSize;
@@ -40,26 +49,28 @@ class _RoomMappingScreenState extends State<RoomMappingScreen> {
     _loadData();
   }
 
+  @override
+  void dispose() {
+    _transformController.dispose();
+    super.dispose();
+  }
+
+  // ── Data ──────────────────────────────────────────────────────────────────
+
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
-
     try {
-      // Load grid model from floor's processed data
       if (widget.floor.processedData != null) {
         _gridModel = GridModel.fromJson(widget.floor.processedData!);
       }
-
-      // Load existing rooms
       final rooms = await _buildingService.getRooms(
         widget.building.id,
         widget.floor.id,
       );
-
       setState(() {
         _rooms = rooms;
         _isLoading = false;
       });
-
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _calculateImageBounds();
       });
@@ -71,26 +82,16 @@ class _RoomMappingScreenState extends State<RoomMappingScreen> {
 
   void _calculateImageBounds() {
     if (_boundsCalculated || _gridModel == null) return;
-
     final RenderBox? renderBox =
         _imageKey.currentContext?.findRenderObject() as RenderBox?;
-
     if (renderBox == null) return;
-
     final containerSize = renderBox.size;
     final imageWidth = _gridModel!.metadata.imageWidth.toDouble();
     final imageHeight = _gridModel!.metadata.imageHeight.toDouble();
-
     if (containerSize.width == 0 || containerSize.height == 0) return;
-
     final containerAspect = containerSize.width / containerSize.height;
     final imageAspect = imageWidth / imageHeight;
-
-    double displayWidth;
-    double displayHeight;
-    double offsetX;
-    double offsetY;
-
+    double displayWidth, displayHeight, offsetX, offsetY;
     if (containerAspect > imageAspect) {
       displayHeight = containerSize.height;
       displayWidth = displayHeight * imageAspect;
@@ -102,84 +103,115 @@ class _RoomMappingScreenState extends State<RoomMappingScreen> {
       offsetX = 0;
       offsetY = (containerSize.height - displayHeight) / 2;
     }
-
     setState(() {
       _imageDisplaySize = Size(displayWidth, displayHeight);
       _imageDisplayOffset = Offset(offsetX, offsetY);
       _imageOriginalSize = Size(imageWidth, imageHeight);
       _boundsCalculated = true;
     });
-
-    debugPrint('✅ [RoomMapping] Image bounds calculated');
   }
 
+  // ── Rotation ──────────────────────────────────────────────────────────────
+
+  void _onInteractionStart(ScaleStartDetails details) {
+    if (details.pointerCount >= 2) {
+      _isMultiTouch = true;
+      _rotationBase = _currentRotation;
+    }
+  }
+
+  void _onInteractionUpdate(ScaleUpdateDetails details) {
+    if (details.pointerCount < 2) return;
+    final newRotation = _rotationBase + details.rotation;
+    setState(() => _currentRotation = newRotation);
+    _applyRotationToMatrix(newRotation);
+  }
+
+  void _onInteractionEnd(ScaleEndDetails details) {
+    Future.delayed(const Duration(milliseconds: 80), () {
+      if (mounted) setState(() => _isMultiTouch = false);
+    });
+  }
+
+  void _applyRotationToMatrix(double rotation) {
+    final m = _transformController.value;
+    final scale = m.getMaxScaleOnAxis();
+    final tx = m.entry(0, 3);
+    final ty = m.entry(1, 3);
+    _transformController.value = Matrix4.identity()
+      ..translate(tx, ty)
+      ..rotateZ(rotation)
+      ..scale(scale);
+  }
+
+  void _resetView() {
+    setState(() {
+      _currentRotation = 0.0;
+      _rotationBase = 0.0;
+    });
+    _transformController.value = Matrix4.identity();
+  }
+
+  // ── Tap handling ──────────────────────────────────────────────────────────
+
   Future<void> _handleTapToAddRoom(TapDownDetails details) async {
+    if (_isMultiTouch) return;
     if (_gridModel == null || _imageDisplaySize == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please wait for floorplan to load')),
-      );
+      _showSnack('Please wait for floorplan to load');
       return;
     }
-
-    // Convert tap to grid coordinates (same logic as navigation)
-    final tapX = details.localPosition.dx;
-    final tapY = details.localPosition.dy;
-
-    final adjustedX = tapX - _imageDisplayOffset!.dx;
-    final adjustedY = tapY - _imageDisplayOffset!.dy;
-
+    final matrix = _transformController.value;
+    final inverse = Matrix4.inverted(matrix);
+    final localPosition = MatrixUtils.transformPoint(
+      inverse,
+      details.localPosition,
+    );
+    final adjustedX = localPosition.dx - _imageDisplayOffset!.dx;
+    final adjustedY = localPosition.dy - _imageDisplayOffset!.dy;
     if (adjustedX < 0 ||
         adjustedX > _imageDisplaySize!.width ||
         adjustedY < 0 ||
         adjustedY > _imageDisplaySize!.height) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please tap inside the floorplan')),
-      );
+      _showSnack('Please tap inside the floorplan');
       return;
     }
-
     final scaleX = _imageOriginalSize!.width / _imageDisplaySize!.width;
     final scaleY = _imageOriginalSize!.height / _imageDisplaySize!.height;
-
-    final imageX = adjustedX * scaleX;
-    final imageY = adjustedY * scaleY;
-
     final cellSize = _gridModel!.cellSize.toDouble();
-
-    final col = ((imageX - cellSize / 2) / cellSize).floor();
-    final row = ((imageY - cellSize / 2) / cellSize).floor();
-
+    final col = ((adjustedX * scaleX - cellSize / 2) / cellSize).floor();
+    final row = ((adjustedY * scaleY - cellSize / 2) / cellSize).floor();
     if (row < 0 ||
         row >= _gridModel!.height ||
         col < 0 ||
         col >= _gridModel!.width) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please tap inside the floorplan area')),
-      );
+      _showSnack('Please tap inside the floorplan area');
       return;
     }
-
-    // Check if it's a wall
     final isWall = _gridModel!.grid[row][col] == 1;
     if (isWall) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Cannot place room on a wall. Tap on an open area.'),
-        ),
-      );
+      _showSnack('Cannot place room on a wall. Tap on an open area.');
       return;
     }
-
-    // Show dialog to enter room name
     await _showAddRoomDialog(row, col);
   }
 
+  void _showSnack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  // ── Dialogs ───────────────────────────────────────────────────────────────
+
   Future<void> _showAddRoomDialog(int row, int col) async {
     final nameController = TextEditingController();
+    final c = AppTheme.colors(context);
 
     final result = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
+        // AlertDialog picks up colors from the theme automatically
         title: const Text('Add Room'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -187,16 +219,27 @@ class _RoomMappingScreenState extends State<RoomMappingScreen> {
             TextField(
               controller: nameController,
               decoration: const InputDecoration(
-                labelText: 'Room Name',
-                hintText: 'e.g., Conference Room A',
+                labelText: 'Room name',
+                hintText: 'e.g. Conference Room A',
+                prefixIcon: Icon(Icons.meeting_room_outlined),
               ),
               textCapitalization: TextCapitalization.words,
               autofocus: true,
             ),
-            const SizedBox(height: 8),
-            Text(
-              'Location: Row $row, Col $col',
-              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Icon(
+                  Icons.pin_drop_outlined,
+                  size: 14,
+                  color: c.onSurfaceSecondary,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  'Row $row · Col $col',
+                  style: TextStyle(fontSize: 12, color: c.onSurfaceSecondary),
+                ),
+              ],
             ),
           ],
         ),
@@ -207,7 +250,7 @@ class _RoomMappingScreenState extends State<RoomMappingScreen> {
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, nameController.text),
-            child: const Text('Add'),
+            child: const Text('Add Room'),
           ),
         ],
       ),
@@ -228,19 +271,17 @@ class _RoomMappingScreenState extends State<RoomMappingScreen> {
         col: col,
         floorNumber: widget.floor.floorNumber,
       );
-
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('✅ Room "$name" added!')));
+        ).showSnackBar(SnackBar(content: Text('Room "$name" added')));
       }
-
-      _loadData(); // Reload rooms
+      _loadData();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('❌ Error adding room: $e')));
+        ).showSnackBar(SnackBar(content: Text('Error adding room: $e')));
       }
     }
   }
@@ -249,8 +290,8 @@ class _RoomMappingScreenState extends State<RoomMappingScreen> {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Delete Room?'),
-        content: Text('Delete "${room.name}"?'),
+        title: const Text('Delete room?'),
+        content: Text('Remove "${room.name}" from the floor plan?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -258,7 +299,10 @@ class _RoomMappingScreenState extends State<RoomMappingScreen> {
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.colors(context).error,
+              foregroundColor: Colors.white,
+            ),
             child: const Text('Delete'),
           ),
         ],
@@ -275,191 +319,228 @@ class _RoomMappingScreenState extends State<RoomMappingScreen> {
         if (mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(const SnackBar(content: Text('✅ Room deleted')));
+          ).showSnackBar(const SnackBar(content: Text('Room deleted')));
         }
         _loadData();
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(SnackBar(content: Text('❌ Error deleting room: $e')));
+          ).showSnackBar(SnackBar(content: Text('Error deleting room: $e')));
         }
       }
     }
   }
 
+  void _showRoomOptions(RoomModel room) {
+    final c = AppTheme.colors(context);
+    showModalBottomSheet(
+      context: context,
+      // Shape + background come from BottomSheetThemeData in AppTheme
+      builder: (context) => Padding(
+        padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Drag handle already provided by theme (showDragHandle: true)
+            const SizedBox(height: 8),
+            Text(
+              room.name,
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+                color: c.onSurface,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Row ${room.gridPoint.row} · Col ${room.gridPoint.col}',
+              style: TextStyle(fontSize: 13, color: c.onSurfaceSecondary),
+            ),
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                icon: Icon(Icons.delete_outline, color: c.error),
+                label: Text('Delete room', style: TextStyle(color: c.error)),
+                style: OutlinedButton.styleFrom(
+                  side: BorderSide(color: c.error),
+                  minimumSize: const Size(double.infinity, 52),
+                ),
+                onPressed: () {
+                  Navigator.pop(context);
+                  _deleteRoom(room);
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Coordinate helpers ────────────────────────────────────────────────────
+
   double _getScreenX(int col) {
     if (_imageDisplaySize == null || _gridModel == null) return 0;
-
     final cellSize = _gridModel!.cellSize.toDouble();
-    final imageX = (col + 0.5) * cellSize;
-
-    final scaleX = _imageDisplaySize!.width / _imageOriginalSize!.width;
-    final screenX = (imageX * scaleX) + _imageDisplayOffset!.dx;
-
-    return screenX;
+    final imgX = (col + 0.5) * cellSize;
+    return imgX * (_imageDisplaySize!.width / _imageOriginalSize!.width) +
+        _imageDisplayOffset!.dx;
   }
 
   double _getScreenY(int row) {
     if (_imageDisplaySize == null || _gridModel == null) return 0;
-
     final cellSize = _gridModel!.cellSize.toDouble();
-    final imageY = (row + 0.5) * cellSize;
-
-    final scaleY = _imageDisplaySize!.height / _imageOriginalSize!.height;
-    final screenY = (imageY * scaleY) + _imageDisplayOffset!.dy;
-
-    return screenY;
+    final imgY = (row + 0.5) * cellSize;
+    return imgY * (_imageDisplaySize!.height / _imageOriginalSize!.height) +
+        _imageDisplayOffset!.dy;
   }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
+    final c = AppTheme.colors(context);
+
     return Scaffold(
-      // FIX: AppBar does not support `subtitle`. Use `title` with a Column instead.
+      // ── AppBar ──────────────────────────────────────────────────────────
       appBar: AppBar(
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
               widget.floor.floorName,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
             ),
             Text(
               '${_rooms.length} rooms mapped',
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 12,
-                fontWeight: FontWeight.normal,
+                fontWeight: FontWeight.w400,
+                color: c.onSurfaceSecondary,
               ),
             ),
           ],
         ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.info_outline),
-            onPressed: () {
-              showDialog(
-                context: context,
-                builder: (context) => AlertDialog(
-                  title: const Text('How to Map Rooms'),
-                  content: const Text(
-                    '1. Tap anywhere on the floorplan\n'
-                    '2. Enter the room name\n'
-                    '3. Room marker will appear\n'
-                    '4. Repeat for all important rooms\n\n'
-                    'Tip: Map key locations like elevators, entrances, restrooms, and major rooms.',
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('Got it'),
-                    ),
-                  ],
-                ),
-              );
-            },
+          // Reset view
+          _AppBarIconBtn(
+            icon: Icons.fit_screen_outlined,
+            tooltip: 'Reset view',
+            onPressed: _resetView,
           ),
+          // Info
+          _AppBarIconBtn(
+            icon: Icons.info_outline_rounded,
+            tooltip: 'Help',
+            onPressed: () => showDialog(
+              context: context,
+              builder: (ctx) => AlertDialog(
+                title: const Text('How to map rooms'),
+                content: const Text(
+                  '1. Pinch to zoom in/out\n'
+                  '2. Drag to pan around\n'
+                  '3. Twist with two fingers to rotate\n'
+                  '4. Tap anywhere to add a room\n'
+                  '5. Tap a marker to view or delete it\n\n'
+                  'Tip: Zoom in for more precise placement.',
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('Got it'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
         ],
       ),
+
+      // ── Body ────────────────────────────────────────────────────────────
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? Center(child: CircularProgressIndicator(color: c.primary))
           : Column(
               children: [
-                // Instructions banner
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  color: Colors.blue.shade50,
-                  child: const Row(
+                // ── Hint banner ──────────────────────────────────────────
+                _HintBanner(color: c),
+
+                // ── Floorplan canvas + floating dropdown overlay ─────────
+                Expanded(
+                  child: Stack(
                     children: [
-                      Icon(Icons.touch_app, color: Colors.blue),
-                      SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          'Tap anywhere on the floorplan to add a room',
-                          style: TextStyle(color: Colors.blue),
-                        ),
+                      // Floorplan
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          return GestureDetector(
+                            onTapDown: _handleTapToAddRoom,
+                            child: InteractiveViewer(
+                              transformationController: _transformController,
+                              minScale: 0.5,
+                              maxScale: 5.0,
+                              boundaryMargin: const EdgeInsets.all(80),
+                              onInteractionStart: _onInteractionStart,
+                              onInteractionUpdate: _onInteractionUpdate,
+                              onInteractionEnd: _onInteractionEnd,
+                              child: Container(
+                                key: _imageKey,
+                                width: constraints.maxWidth,
+                                height: constraints.maxHeight,
+                                color: c.floorPlanBackground,
+                                child: Stack(
+                                  children: [
+                                    if (_imageDisplaySize != null &&
+                                        _imageDisplayOffset != null)
+                                      Positioned(
+                                        left: _imageDisplayOffset!.dx,
+                                        top: _imageDisplayOffset!.dy,
+                                        width: _imageDisplaySize!.width,
+                                        height: _imageDisplaySize!.height,
+                                        child: _buildFloorplanImage(),
+                                      ),
+                                    if (_gridModel != null)
+                                      ..._rooms.map(
+                                        (room) => _buildRoomMarker(room, c),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        },
                       ),
+
+                      // ── Floating room chips dropdown (top-left) ──────────
+                      if (_rooms.isNotEmpty)
+                        Positioned(
+                          top: 12,
+                          left: 12,
+                          child: _RoomChipsDropdown(
+                            rooms: _rooms,
+                            c: c,
+                            onDelete: _deleteRoom,
+                          ),
+                        ),
                     ],
                   ),
                 ),
-
-                // Floorplan with room markers
-                Expanded(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      return GestureDetector(
-                        onTapDown: _handleTapToAddRoom,
-                        child: Container(
-                          key: _imageKey,
-                          width: constraints.maxWidth,
-                          height: constraints.maxHeight,
-                          color: Theme.of(context).brightness == Brightness.dark
-                              ? Colors.grey[850]
-                              : Colors.grey[200],
-                          child: Stack(
-                            children: [
-                              // Floorplan image
-                              if (_imageDisplaySize != null &&
-                                  _imageDisplayOffset != null)
-                                Positioned(
-                                  left: _imageDisplayOffset!.dx,
-                                  top: _imageDisplayOffset!.dy,
-                                  width: _imageDisplaySize!.width,
-                                  height: _imageDisplaySize!.height,
-                                  child: _buildFloorplanImage(),
-                                ),
-
-                              // Room markers
-                              if (_gridModel != null)
-                                ..._rooms.map((room) => _buildRoomMarker(room)),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-
-                // Room list at bottom
-                if (_rooms.isNotEmpty)
-                  Container(
-                    height: 120,
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).scaffoldBackgroundColor,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.1),
-                          blurRadius: 10,
-                          offset: const Offset(0, -5),
-                        ),
-                      ],
-                    ),
-                    child: ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.all(12),
-                      itemCount: _rooms.length,
-                      itemBuilder: (context, index) {
-                        final room = _rooms[index];
-                        return _buildRoomChip(room);
-                      },
-                    ),
-                  ),
               ],
             ),
     );
   }
 
+  // ── Sub-widgets ───────────────────────────────────────────────────────────
+
   Widget _buildFloorplanImage() {
     final imageUrl = widget.floor.imageUrl;
-
+    Widget image;
     if (MockStorageService.isMockUrl(imageUrl)) {
-      final mockStorage = MockStorageService();
-      final localFile = mockStorage.getLocalFile(imageUrl);
-
-      return Image.file(
-        localFile,
+      image = Image.file(
+        MockStorageService().getLocalFile(imageUrl),
         fit: BoxFit.contain,
-        frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+        frameBuilder: (_, child, frame, __) {
           if (frame != null && !_boundsCalculated) {
             WidgetsBinding.instance.addPostFrameCallback(
               (_) => _calculateImageBounds(),
@@ -469,10 +550,10 @@ class _RoomMappingScreenState extends State<RoomMappingScreen> {
         },
       );
     } else {
-      return Image.network(
+      image = Image.network(
         imageUrl,
         fit: BoxFit.contain,
-        frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+        frameBuilder: (_, child, frame, __) {
           if (frame != null && !_boundsCalculated) {
             WidgetsBinding.instance.addPostFrameCallback(
               (_) => _calculateImageBounds(),
@@ -482,80 +563,312 @@ class _RoomMappingScreenState extends State<RoomMappingScreen> {
         },
       );
     }
+    return image;
   }
 
-  Widget _buildRoomMarker(RoomModel room) {
+  Widget _buildRoomMarker(RoomModel room, AppColors c) {
     final x = _getScreenX(room.gridPoint.col);
     final y = _getScreenY(room.gridPoint.row);
 
     return Positioned(
-      left: x - 20,
-      top: y - 40,
+      left: x - 24,
+      top: y - 52,
       child: GestureDetector(
         onTap: () => _showRoomOptions(room),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
+            // Label chip
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
-                color: Colors.blue,
-                borderRadius: BorderRadius.circular(12),
+                color: c.pinLabel,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: c.primary.withOpacity(0.35),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
               ),
               child: Text(
                 room.name,
-                style: const TextStyle(
-                  color: Colors.white,
+                style: TextStyle(
+                  color: c.pinLabelText,
                   fontSize: 10,
-                  fontWeight: FontWeight.bold,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.2,
                 ),
               ),
             ),
-            const Icon(Icons.location_on, color: Colors.blue, size: 40),
+            // Pin icon
+            Icon(Icons.location_on_rounded, color: c.primary, size: 32),
           ],
         ),
       ),
     );
   }
+}
 
-  Widget _buildRoomChip(RoomModel room) {
+// ── Helper sub-widgets ────────────────────────────────────────────────────────
+
+class _AppBarIconBtn extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onPressed;
+
+  const _AppBarIconBtn({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      icon: Icon(icon, size: 22),
+      tooltip: tooltip,
+      onPressed: onPressed,
+    );
+  }
+}
+
+class _HintBanner extends StatelessWidget {
+  final AppColors color;
+  const _HintBanner({required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Container(
-      margin: const EdgeInsets.only(right: 8),
-      child: Chip(
-        avatar: const Icon(Icons.room, size: 18),
-        label: Text(room.name),
-        deleteIcon: const Icon(Icons.close, size: 18),
-        onDeleted: () => _deleteRoom(room),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: isDark
+            ? color.primary.withOpacity(0.10)
+            : color.primary.withOpacity(0.07),
+        border: Border(
+          bottom: BorderSide(color: color.primary.withOpacity(0.15)),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.touch_app_rounded, color: color.primary, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Tap to place room · Pinch to zoom · Drag to pan',
+              style: TextStyle(
+                color: color.primary,
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
+}
 
-  void _showRoomOptions(RoomModel room) {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              room.name,
-              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Row: ${room.gridPoint.row}, Col: ${room.gridPoint.col}',
-              style: const TextStyle(color: Colors.grey),
-            ),
-            const SizedBox(height: 24),
-            ListTile(
-              leading: const Icon(Icons.delete, color: Colors.red),
-              title: const Text('Delete Room'),
-              onTap: () {
-                Navigator.pop(context);
-                _deleteRoom(room);
-              },
-            ),
-          ],
+// ── Dropdown room chips panel ─────────────────────────────────────────────────
+//
+// Collapsed: a single pill showing "N rooms mapped ▼"
+// Expanded:  the pill stays at top, a scrollable vertical list of chips
+//            animates open below it.
+//
+class _RoomChipsDropdown extends StatefulWidget {
+  final List<RoomModel> rooms;
+  final AppColors c;
+  final void Function(RoomModel) onDelete;
+
+  const _RoomChipsDropdown({
+    required this.rooms,
+    required this.c,
+    required this.onDelete,
+  });
+
+  @override
+  State<_RoomChipsDropdown> createState() => _RoomChipsDropdownState();
+}
+
+class _RoomChipsDropdownState extends State<_RoomChipsDropdown>
+    with SingleTickerProviderStateMixin {
+  bool _expanded = false;
+  late final AnimationController _ctrl;
+  late final Animation<double> _expandAnim;
+
+  // Max height for the scrollable list portion (≈4 chip rows)
+  static const double _listMaxHeight = 200.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 220),
+    );
+    _expandAnim = CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _toggle() {
+    setState(() => _expanded = !_expanded);
+    _expanded ? _ctrl.forward() : _ctrl.reverse();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.c;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final count = widget.rooms.length;
+
+    // Floating card — semi-opaque so the floorplan shows through slightly
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 210),
+      child: Material(
+        color: Colors.transparent,
+        child: Container(
+          decoration: BoxDecoration(
+            color: isDark
+                ? const Color(0xEE1C1C1E) // 93% opaque dark card
+                : const Color(0xF5FFFFFF), // 96% opaque white
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: c.border, width: 1),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x33000000),
+                blurRadius: 14,
+                offset: Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // ── Pill toggle ────────────────────────────────────────────
+              GestureDetector(
+                onTap: _toggle,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.room_outlined, size: 15, color: c.primary),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          '$count ${count == 1 ? 'room' : 'rooms'} mapped',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: c.primary,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      AnimatedRotation(
+                        turns: _expanded ? 0.5 : 0,
+                        duration: const Duration(milliseconds: 220),
+                        curve: Curves.easeInOut,
+                        child: Icon(
+                          Icons.keyboard_arrow_down_rounded,
+                          size: 18,
+                          color: c.primary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              // ── Animated expandable chip list ──────────────────────────
+              SizeTransition(
+                sizeFactor: _expandAnim,
+                axisAlignment: -1,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Divider(height: 1, color: c.divider),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(
+                        maxHeight: _listMaxHeight,
+                      ),
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 8,
+                        ),
+                        itemCount: widget.rooms.length,
+                        itemBuilder: (context, index) {
+                          final room = widget.rooms[index];
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 6),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 28,
+                                  height: 28,
+                                  decoration: BoxDecoration(
+                                    color: c.primary.withOpacity(0.12),
+                                    borderRadius: BorderRadius.circular(7),
+                                  ),
+                                  child: Icon(
+                                    Icons.room_outlined,
+                                    size: 15,
+                                    color: c.primary,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    room.name,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w500,
+                                      color: c.onSurface,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                GestureDetector(
+                                  onTap: () => widget.onDelete(room),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(3),
+                                    decoration: BoxDecoration(
+                                      color: c.chipFill,
+                                      borderRadius: BorderRadius.circular(5),
+                                    ),
+                                    child: Icon(
+                                      Icons.close_rounded,
+                                      size: 13,
+                                      color: c.iconMuted,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

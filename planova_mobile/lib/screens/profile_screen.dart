@@ -32,12 +32,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final user = _authService.currentUser;
     if (user != null) {
       final data = await _authService.getUserData(user.uid);
-      setState(() {
-        _userData = data;
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          // If Firestore doc is missing, fall back to Firebase Auth info
+          _userData =
+              data ??
+              {
+                'name': user.displayName ?? 'User',
+                'email': user.email ?? '',
+                'photoUrl': user.photoURL,
+                'role': 'admin',
+              };
+          _isLoading = false;
+        });
+      }
     } else {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -186,7 +196,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     final name = _userData?['name'] ?? 'User';
     final email = _userData?['email'] ?? _authService.currentUser?.email ?? '';
-    final role = (_userData?['role'] ?? 'admin').toString();
     final photoUrl = _userData?['photoUrl'] as String?;
     final initials = name.isNotEmpty ? name[0].toUpperCase() : 'U';
 
@@ -240,7 +249,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               )
                             : null,
                       ),
-                // ✅ Edit photo button
                 Positioned(
                   bottom: 0,
                   right: 0,

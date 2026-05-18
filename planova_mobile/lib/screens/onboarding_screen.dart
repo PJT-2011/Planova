@@ -16,37 +16,29 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final List<OnboardingPage> _pages = [
     OnboardingPage(
       title: 'Welcome to Planova',
-      description: 'Navigate indoors with ease using your phone\'s sensors',
+      description: 'Navigate indoors with ease',
       icon: Icons.navigation,
       color: Colors.blue,
     ),
     OnboardingPage(
       title: 'Upload Floorplans',
-      description:
-          'Upload any building floorplan - CAD drawings, photos, or hand-drawn sketches',
+      description: 'Upload any building floorplan',
       icon: Icons.upload_file,
       color: Colors.green,
     ),
     OnboardingPage(
       title: 'Smart Processing',
       description:
-          'Our AI automatically detects walls, doorways, and navigable spaces',
+          'automatically detects walls, doorways, and navigable spaces',
       icon: Icons.memory,
       color: Colors.orange,
     ),
     OnboardingPage(
       title: 'Select & Navigate',
       description:
-          'Tap your start and destination points, then follow the route in real-time',
+          'Tap your start and destination points, then follow the route',
       icon: Icons.location_on,
       color: Colors.red,
-    ),
-    OnboardingPage(
-      title: 'Sensor Tracking',
-      description:
-          'Your position updates as you walk using step detection and compass',
-      icon: Icons.sensors,
-      color: Colors.purple,
     ),
   ];
 
