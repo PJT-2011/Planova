@@ -4,6 +4,9 @@ import 'package:planova_mobile/models/floor_model.dart';
 import 'package:planova_mobile/models/room_model.dart';
 import 'package:planova_mobile/services/building_service.dart';
 import 'package:planova_mobile/screens/navigation_screen_with_rooms.dart';
+import 'package:planova_mobile/theme/app_theme.dart';
+import 'package:planova_mobile/widgets/skeletons.dart';
+import 'package:planova_mobile/main.dart';
 
 class FloorSelectionScreen extends StatefulWidget {
   final BuildingModel building;
@@ -26,7 +29,6 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
   List<FloorModel> _floors = [];
   Map<String, List<RoomModel>> _roomsByFloor = {};
   bool _isLoading = true;
-
   TabController? _tabController;
   int _currentFloorIndex = 0;
 
@@ -44,43 +46,32 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
 
   Future<void> _loadBuildingData() async {
     setState(() => _isLoading = true);
-
     try {
-      // Load all floors
       final floors = await _buildingService.getFloors(widget.building.id);
-
-      // Load rooms for each floor
       final Map<String, List<RoomModel>> roomsByFloor = {};
       for (final floor in floors) {
-        final rooms = await _buildingService.getRooms(
+        roomsByFloor[floor.id] = await _buildingService.getRooms(
           widget.building.id,
           floor.id,
         );
-        roomsByFloor[floor.id] = rooms;
       }
-
       if (!mounted) return;
-
       setState(() {
         _floors = floors;
         _roomsByFloor = roomsByFloor;
         _isLoading = false;
-
-        // Create tab controller
         if (floors.isNotEmpty) {
           _tabController?.dispose();
           _tabController = TabController(length: floors.length, vsync: this);
           _tabController!.addListener(() {
             if (!_tabController!.indexIsChanging) {
-              setState(() {
-                _currentFloorIndex = _tabController!.index;
-              });
+              setState(() => _currentFloorIndex = _tabController!.index);
             }
           });
         }
       });
     } catch (e) {
-      debugPrint('❌ [FloorSelection] Error loading data: $e');
+      debugPrint('❌ [FloorSelection] Error: $e');
       if (mounted) setState(() => _isLoading = false);
     }
   }
@@ -91,8 +82,8 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
   void _openNavigation(FloorModel floor, {RoomModel? targetRoom}) {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (context) => NavigationScreenWithRooms(
+      PlanovaModalRoute(
+        builder: (_) => NavigationScreenWithRooms(
           building: widget.building,
           floor: floor,
           targetRoom: targetRoom,
@@ -103,30 +94,52 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
 
   @override
   Widget build(BuildContext context) {
+    final c = AppTheme.colors(context);
+    final tt = Theme.of(context).textTheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     if (_isLoading) {
       return Scaffold(
-        appBar: AppBar(title: Text(widget.building.buildingName)),
+        backgroundColor: c.background,
+        appBar: AppBar(
+          title: Text(widget.building.buildingName),
+          backgroundColor: c.background,
+          foregroundColor: c.onBackground,
+        ),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
 
     if (_floors.isEmpty) {
       return Scaffold(
-        appBar: AppBar(title: Text(widget.building.buildingName)),
+        backgroundColor: c.background,
+        appBar: AppBar(
+          title: Text(widget.building.buildingName),
+          backgroundColor: c.background,
+          foregroundColor: c.onBackground,
+          leading: IconButton(
+            icon: Icon(
+              Icons.arrow_back_ios_rounded,
+              color: c.onBackground,
+              size: 20,
+            ),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ),
         body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.layers_clear, size: 100, color: Colors.grey[300]),
-              const SizedBox(height: 24),
-              const Text(
+              Icon(Icons.layers_clear, size: 80, color: c.onSurfaceTertiary),
+              const SizedBox(height: 20),
+              Text(
                 'No Floors Available',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                style: tt.headlineSmall?.copyWith(color: c.onBackground),
               ),
               const SizedBox(height: 8),
-              const Text(
+              Text(
                 'This building hasn\'t been set up yet',
-                style: TextStyle(color: Colors.grey),
+                style: tt.bodyMedium?.copyWith(color: c.onSurfaceSecondary),
               ),
             ],
           ),
@@ -135,116 +148,183 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
     }
 
     return Scaffold(
+      backgroundColor: c.background,
       appBar: AppBar(
-        title: Text(widget.building.buildingName),
-        bottom: TabBar(
-          controller: _tabController,
-          isScrollable: _floors.length > 4,
-          tabs: _floors.map((floor) {
-            return Tab(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(floor.floorName),
-                  Text(
-                    '${_roomsByFloor[floor.id]?.length ?? 0} rooms',
-                    style: const TextStyle(fontSize: 10),
-                  ),
-                ],
-              ),
-            );
-          }).toList(),
+        backgroundColor: c.background,
+        foregroundColor: c.onBackground,
+        elevation: 0,
+        leading: IconButton(
+          icon: Icon(
+            Icons.arrow_back_ios_rounded,
+            color: c.onBackground,
+            size: 20,
+          ),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.building.buildingName,
+              style: tt.titleLarge?.copyWith(color: c.onBackground),
+            ),
+            Text(
+              widget.building.address,
+              style: tt.bodySmall?.copyWith(color: c.onSurfaceSecondary),
+            ),
+          ],
+        ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(48),
+          child: Container(
+            decoration: BoxDecoration(
+              border: Border(bottom: BorderSide(color: c.divider, width: 1)),
+            ),
+            child: TabBar(
+              controller: _tabController,
+              isScrollable: _floors.length > 3,
+              labelColor: c.primary,
+              unselectedLabelColor: c.onSurfaceTertiary,
+              indicatorColor: c.primary,
+              indicatorWeight: 2.5,
+              dividerColor: Colors.transparent,
+              labelStyle: tt.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+              unselectedLabelStyle: tt.titleSmall,
+              tabs: _floors
+                  .map(
+                    (floor) => Tab(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            floor.floorNumber.toString(),
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          Text(
+                            '${_roomsByFloor[floor.id]?.length ?? 0} rooms',
+                            style: const TextStyle(fontSize: 10),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
         ),
       ),
       body: TabBarView(
         controller: _tabController,
         children: _floors.map((floor) {
           final rooms = _roomsByFloor[floor.id] ?? [];
-          return _buildFloorView(floor, rooms);
+          return _buildFloorView(floor, rooms, c, tt, isDark);
         }).toList(),
       ),
     );
   }
 
-  Widget _buildFloorView(FloorModel floor, List<RoomModel> rooms) {
+  Widget _buildFloorView(
+    FloorModel floor,
+    List<RoomModel> rooms,
+    AppColors c,
+    TextTheme tt,
+    bool isDark,
+  ) {
     return Column(
       children: [
         // Search bar
         Container(
-          padding: const EdgeInsets.all(16),
-          color: Colors.grey[100],
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+          color: c.background,
           child: TextField(
             decoration: InputDecoration(
               hintText: 'Search rooms on ${floor.floorName}...',
-              prefixIcon: const Icon(Icons.search),
-              filled: true,
-              fillColor: Colors.white,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide.none,
-              ),
+              prefixIcon: Icon(Icons.search_rounded, color: c.iconMuted),
             ),
-            onSubmitted: (query) => _searchRooms(query),
+            onSubmitted: _searchRooms,
           ),
         ),
 
-        // Floor info banner
+        // Info banner
         Container(
-          padding: const EdgeInsets.all(16),
-          color: Colors.blue.shade50,
+          margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: c.primaryContainer,
+            borderRadius: BorderRadius.circular(AppRadius.sm),
+            border: Border.all(color: c.primary.withValues(alpha: 0.15)),
+          ),
           child: Row(
             children: [
-              const Icon(Icons.info_outline, color: Colors.blue),
-              const SizedBox(width: 12),
+              Icon(Icons.info_outline_rounded, color: c.primary, size: 16),
+              const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  'Viewing: ${floor.floorName} • ${rooms.length} room${rooms.length == 1 ? '' : 's'} available',
-                  style: const TextStyle(color: Colors.blue),
+                  'Viewing: ${floor.floorName} · ${rooms.length} room${rooms.length == 1 ? '' : 's'} available',
+                  style: tt.bodySmall?.copyWith(color: c.onPrimaryContainer),
                 ),
               ),
-              TextButton(
-                onPressed: () => _showAllFloorsSearch(),
-                child: const Text('Search All Floors'),
+              GestureDetector(
+                onTap: _showAllFloorsSearch,
+                child: Text(
+                  'Search All Floors',
+                  style: tt.labelSmall?.copyWith(
+                    color: c.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
             ],
           ),
         ),
 
-        // Room list
+        // Room list or empty state
         Expanded(
           child: rooms.isEmpty
-              ? _buildEmptyRoomState()
+              ? _buildEmptyRoomState(floor, c, tt)
               : ListView.builder(
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 100),
                   itemCount: rooms.length,
-                  itemBuilder: (context, index) {
-                    final room = rooms[index];
-                    return _buildRoomCard(floor, room);
-                  },
+                  itemBuilder: (_, i) =>
+                      _buildRoomCard(floor, rooms[i], c, tt, isDark),
                 ),
         ),
 
-        // Quick actions
+        // Bottom bar
         Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.1),
-                blurRadius: 10,
-                offset: const Offset(0, -5),
-              ),
-            ],
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 12,
+            bottom: MediaQuery.of(context).padding.bottom + 12,
           ),
-          child: SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: () => _openNavigation(floor),
-              icon: const Icon(Icons.map),
-              label: const Text('View Floor Map'),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xFF1C2942) : c.surface,
+            border: Border(top: BorderSide(color: c.divider, width: 1)),
+            boxShadow: isDark ? [] : AppShadows.modal,
+          ),
+          child: GestureDetector(
+            onTap: () => _openNavigation(floor),
+            child: Container(
+              height: 54,
+              decoration: BoxDecoration(
+                gradient: heroGradient(),
+                borderRadius: BorderRadius.circular(AppRadius.md),
+                boxShadow: AppShadows.primaryGlow(c.primary),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.map_rounded, color: Colors.white, size: 20),
+                  const SizedBox(width: 10),
+                  Text(
+                    'View Floor Map',
+                    style: tt.labelLarge?.copyWith(color: Colors.white),
+                  ),
+                ],
               ),
             ),
           ),
@@ -253,100 +333,229 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
     );
   }
 
-  Widget _buildEmptyRoomState() {
+  Widget _buildEmptyRoomState(FloorModel floor, AppColors c, TextTheme tt) {
     return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.room_outlined, size: 80, color: Colors.grey[300]),
-          const SizedBox(height: 16),
-          const Text(
-            'No Rooms Mapped Yet',
-            style: TextStyle(fontSize: 18, color: Colors.grey),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'This floor hasn\'t been set up',
-            style: TextStyle(color: Colors.grey, fontSize: 14),
-          ),
-          const SizedBox(height: 24),
-          ElevatedButton(
-            onPressed: () => _openNavigation(_currentFloor),
-            child: const Text('View Map Anyway'),
-          ),
-        ],
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 80,
+              height: 80,
+              decoration: BoxDecoration(
+                color: c.primaryContainer,
+                borderRadius: BorderRadius.circular(AppRadius.xl),
+              ),
+              child: Icon(
+                Icons.location_off_rounded,
+                size: 40,
+                color: c.primary,
+              ),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              'No Rooms Mapped Yet',
+              style: tt.headlineSmall?.copyWith(color: c.onBackground),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'This floor hasn\'t been set up',
+              style: tt.bodyMedium?.copyWith(color: c.onSurfaceSecondary),
+            ),
+            const SizedBox(height: 28),
+            GestureDetector(
+              onTap: () => _openNavigation(floor),
+              child: Container(
+                height: 48,
+                padding: const EdgeInsets.symmetric(horizontal: 28),
+                decoration: BoxDecoration(
+                  gradient: heroGradient(),
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                ),
+                child: Center(
+                  child: Text(
+                    'View Map Anyway',
+                    style: tt.labelLarge?.copyWith(color: Colors.white),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildRoomCard(FloorModel floor, RoomModel room) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: ListTile(
-        leading: Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(
-            color: Colors.blue.shade100,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: const Icon(Icons.room, color: Colors.blue),
-        ),
-        title: Text(
-          room.name,
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        subtitle: Text(
-          '${floor.floorName} • Row ${room.gridPoint.row}, Col ${room.gridPoint.col}',
-        ),
-        trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+  Widget _buildRoomCard(
+    FloorModel floor,
+    RoomModel room,
+    AppColors c,
+    TextTheme tt,
+    bool isDark,
+  ) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: isDark
+          ? BoxDecoration(
+              color: const Color(0xFF1C2942),
+              borderRadius: BorderRadius.circular(AppRadius.lg),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+            )
+          : lightCardDecoration(),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppRadius.lg),
         onTap: () => _navigateToRoom(floor, room),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF1450A8), Color(0xFF3B82F6)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(AppRadius.sm),
+                ),
+                child: const Icon(
+                  Icons.meeting_room_rounded,
+                  color: Colors.white,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      room.name,
+                      style: tt.titleSmall?.copyWith(
+                        color: c.onSurface,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${floor.floorName} · Row ${room.gridPoint.row}, Col ${room.gridPoint.col}',
+                      style: tt.bodySmall?.copyWith(
+                        color: c.onSurfaceSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right_rounded, color: c.iconMuted, size: 20),
+            ],
+          ),
+        ),
       ),
     );
   }
 
   void _navigateToRoom(FloorModel floor, RoomModel room) {
+    final c = AppTheme.colors(context);
+    final tt = Theme.of(context).textTheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     showModalBottomSheet(
       context: context,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(24),
+      backgroundColor: isDark ? const Color(0xFF1C2942) : Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 20),
+              decoration: BoxDecoration(
+                color: c.border,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF1450A8), Color(0xFF3B82F6)],
+                ),
+                borderRadius: BorderRadius.circular(AppRadius.md),
+              ),
+              child: const Icon(
+                Icons.meeting_room_rounded,
+                color: Colors.white,
+                size: 28,
+              ),
+            ),
+            const SizedBox(height: 14),
             Text(
               room.name,
-              style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+              style: tt.headlineMedium?.copyWith(
+                color: c.onSurface,
+                fontWeight: FontWeight.w700,
+              ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 4),
             Text(
               floor.floorName,
-              style: const TextStyle(color: Colors.grey, fontSize: 16),
+              style: tt.bodyMedium?.copyWith(color: c.onSurfaceSecondary),
             ),
-            const SizedBox(height: 24),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: () {
-                  Navigator.pop(context);
-                  _openNavigation(floor, targetRoom: room);
-                },
-                icon: const Icon(Icons.navigation),
-                label: const Text('Navigate to This Room'),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.all(16),
+            const SizedBox(height: 28),
+            GestureDetector(
+              onTap: () {
+                Navigator.pop(context);
+                _openNavigation(floor, targetRoom: room);
+              },
+              child: Container(
+                height: 54,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  gradient: heroGradient(),
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                  boxShadow: AppShadows.primaryGlow(c.primary),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(
+                      Icons.navigation_rounded,
+                      color: Colors.white,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      'Navigate to This Room',
+                      style: tt.labelLarge?.copyWith(color: Colors.white),
+                    ),
+                  ],
                 ),
               ),
             ),
             const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.close),
-                label: const Text('Cancel'),
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.all(16),
+            GestureDetector(
+              onTap: () => Navigator.pop(context),
+              child: Container(
+                height: 50,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                  border: Border.all(color: c.border, width: 1.5),
+                ),
+                child: Center(
+                  child: Text(
+                    'Cancel',
+                    style: tt.labelLarge?.copyWith(color: c.onSurfaceSecondary),
+                  ),
                 ),
               ),
             ),
@@ -358,26 +567,24 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
 
   void _searchRooms(String query) {
     if (query.isEmpty) return;
-
-    final results = _currentRooms
-        .where((room) => room.matchesSearch(query))
-        .toList();
-
+    final results = _currentRooms.where((r) => r.matchesSearch(query)).toList();
     _showSearchResults(results, query, singleFloor: true);
   }
 
   void _showAllFloorsSearch() {
-    final queryController = TextEditingController();
+    final controller = TextEditingController();
+    final c = AppTheme.colors(context);
+    final tt = Theme.of(context).textTheme;
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Search All Floors'),
+      builder: (_) => AlertDialog(
+        title: Text('Search All Floors', style: tt.headlineSmall),
         content: TextField(
-          controller: queryController,
+          controller: controller,
           decoration: const InputDecoration(
-            labelText: 'Room name',
             hintText: 'e.g., Conference Room',
+            prefixIcon: Icon(Icons.search_rounded),
           ),
           autofocus: true,
         ),
@@ -388,9 +595,9 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
           ),
           ElevatedButton(
             onPressed: () {
-              final query = queryController.text;
+              final q = controller.text;
               Navigator.pop(context);
-              _searchAllFloors(query);
+              _searchAllFloors(q);
             },
             child: const Text('Search'),
           ),
@@ -401,28 +608,23 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
 
   Future<void> _searchAllFloors(String query) async {
     if (query.isEmpty) return;
-
-    // Show loading indicator
     if (!mounted) return;
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => const Center(child: CircularProgressIndicator()),
+      builder: (_) => const Center(child: CircularProgressIndicator()),
     );
-
     try {
       final results = await _buildingService.searchRooms(
         widget.building.id,
         query,
       );
-
       if (!mounted) return;
-      Navigator.pop(context); // Close loading
-
+      Navigator.pop(context);
       _showSearchResults(results, query, singleFloor: false);
     } catch (e) {
       if (!mounted) return;
-      Navigator.pop(context); // Close loading
+      Navigator.pop(context);
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Error searching: $e')));
@@ -434,28 +636,47 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
     String query, {
     required bool singleFloor,
   }) {
+    final c = AppTheme.colors(context);
+    final tt = Theme.of(context).textTheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (context) => DraggableScrollableSheet(
+      backgroundColor: isDark ? const Color(0xFF1C2942) : Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (_) => DraggableScrollableSheet(
         initialChildSize: 0.7,
         minChildSize: 0.5,
         maxChildSize: 0.9,
         expand: false,
-        builder: (context, scrollController) => Container(
-          padding: const EdgeInsets.all(24),
+        builder: (_, scrollController) => Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'Search Results',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: c.border,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
               ),
-              const SizedBox(height: 8),
+              Text(
+                'Search Results',
+                style: tt.headlineSmall?.copyWith(color: c.onSurface),
+              ),
+              const SizedBox(height: 4),
               Text(
                 '${results.length} result${results.length == 1 ? '' : 's'} for "$query"'
                 '${singleFloor ? ' on ${_currentFloor.floorName}' : ' across all floors'}',
-                style: const TextStyle(color: Colors.grey),
+                style: tt.bodySmall?.copyWith(color: c.onSurfaceSecondary),
               ),
               const SizedBox(height: 16),
               Expanded(
@@ -464,15 +685,17 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const Icon(
-                              Icons.search_off,
-                              size: 64,
-                              color: Colors.grey,
+                            Icon(
+                              Icons.search_off_rounded,
+                              size: 56,
+                              color: c.onSurfaceTertiary,
                             ),
-                            const SizedBox(height: 16),
-                            const Text(
+                            const SizedBox(height: 12),
+                            Text(
                               'No rooms found',
-                              style: TextStyle(color: Colors.grey),
+                              style: tt.bodyMedium?.copyWith(
+                                color: c.onSurfaceSecondary,
+                              ),
                             ),
                             if (singleFloor) ...[
                               const SizedBox(height: 8),
@@ -490,40 +713,79 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
                     : ListView.builder(
                         controller: scrollController,
                         itemCount: results.length,
-                        itemBuilder: (context, index) {
-                          final room = results[index];
-                          // Find the floor safely
-                          final floorMatches = _floors.where(
+                        itemBuilder: (_, i) {
+                          final room = results[i];
+                          final floorMatch = _floors.where(
                             (f) => f.id == room.floorId,
                           );
-                          if (floorMatches.isEmpty) {
+                          if (floorMatch.isEmpty)
                             return const SizedBox.shrink();
-                          }
-                          final floor = floorMatches.first;
-
-                          return ListTile(
-                            leading: const Icon(Icons.room, color: Colors.blue),
-                            title: Text(room.name),
-                            subtitle: Text(floor.floorName),
-                            trailing: const Icon(
-                              Icons.arrow_forward_ios,
-                              size: 16,
+                          final floor = floorMatch.first;
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            decoration: isDark
+                                ? BoxDecoration(
+                                    color: const Color(0xFF243450),
+                                    borderRadius: BorderRadius.circular(
+                                      AppRadius.md,
+                                    ),
+                                    border: Border.all(
+                                      color: Colors.white.withValues(
+                                        alpha: 0.07,
+                                      ),
+                                    ),
+                                  )
+                                : lightCardDecoration(radius: 14),
+                            child: ListTile(
+                              leading: Container(
+                                width: 40,
+                                height: 40,
+                                decoration: BoxDecoration(
+                                  gradient: const LinearGradient(
+                                    colors: [
+                                      Color(0xFF1450A8),
+                                      Color(0xFF3B82F6),
+                                    ],
+                                  ),
+                                  borderRadius: BorderRadius.circular(
+                                    AppRadius.sm,
+                                  ),
+                                ),
+                                child: const Icon(
+                                  Icons.meeting_room_rounded,
+                                  color: Colors.white,
+                                  size: 18,
+                                ),
+                              ),
+                              title: Text(
+                                room.name,
+                                style: tt.titleSmall?.copyWith(
+                                  color: c.onSurface,
+                                ),
+                              ),
+                              subtitle: Text(
+                                floor.floorName,
+                                style: tt.bodySmall?.copyWith(
+                                  color: c.onSurfaceSecondary,
+                                ),
+                              ),
+                              trailing: Icon(
+                                Icons.chevron_right_rounded,
+                                color: c.iconMuted,
+                                size: 18,
+                              ),
+                              onTap: () {
+                                Navigator.pop(context);
+                                final idx = _floors.indexOf(floor);
+                                _tabController?.animateTo(idx);
+                                Future.delayed(
+                                  const Duration(milliseconds: 300),
+                                  () {
+                                    if (mounted) _navigateToRoom(floor, room);
+                                  },
+                                );
+                              },
                             ),
-                            onTap: () {
-                              Navigator.pop(context);
-                              // Switch to correct floor tab
-                              final floorIndex = _floors.indexOf(floor);
-                              _tabController?.animateTo(floorIndex);
-                              // Navigate to room after tab switch
-                              Future.delayed(
-                                const Duration(milliseconds: 300),
-                                () {
-                                  if (mounted) {
-                                    _navigateToRoom(floor, room);
-                                  }
-                                },
-                              );
-                            },
                           );
                         },
                       ),

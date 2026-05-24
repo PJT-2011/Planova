@@ -5,15 +5,9 @@ import 'package:planova_mobile/models/grid_model.dart';
 
 /// Grid processor — fallback for on-device processing.
 ///
-/// Normally the Cloud Function (with Gemini preprocessing) handles this.
-/// This runs on-device as a fallback when the function is unavailable.
-///
-/// Image type classification pipeline:
-///   A_thin_walls  — white bg, thin black lines (< 8px walls)
-///   B_thick_walls — white bg, thick black walls (≥ 8px walls)
-///   C_colored     — colored room fills, black walls
-///   D_gray_floor  — gray background/floor (office, STI evacuation plans)
-///   E_compressed  — compressed pixel range (photos, scans)
+/// V18: Added _connectIsolatedRegions() with wall-density check
+///      to safely connect garages/detached areas without cutting
+///      through solid structural walls.
 class GridProcessor {
   Future<GridModel> processImage({
     required Uint8List imageBytes,
@@ -42,7 +36,6 @@ class GridProcessor {
 
     // ── Stage 3: Prepare working pixels ───────────────────────────────────
     List<int> working;
-
     if (imgType == 'E_compressed') {
       working = _stretchContrast(grayPixels, grayMin, grayMax);
       final newMode = _findMode(working);
@@ -54,15 +47,12 @@ class GridProcessor {
       working = List<int>.from(grayPixels);
     }
 
-    // ── Stage 4: Inversion check using MODE ───────────────────────────────
-    // Use mode (most common pixel = true background) not corner sampling.
-    // Corner sampling is fooled by image borders/frames (e.g. STI red border).
+    // ── Stage 4: Inversion check ──────────────────────────────────────────
     final modeVal = _findMode(working);
     if (modeVal <= 128) {
       working = working.map((v) => 255 - v).toList();
       print('✅ [GRID] Inverted (mode was $modeVal)');
     }
-
     final finalMode = _findMode(working);
 
     // ── Stage 5: Threshold per type ───────────────────────────────────────
@@ -113,7 +103,6 @@ class GridProcessor {
     // ── Stage 6: Build grid ───────────────────────────────────────────────
     final width = (image.width / cellSize).ceil();
     final height = (image.height / cellSize).ceil();
-
     final grid = List.generate(height, (_) => List.generate(width, (_) => 0));
 
     for (int r = 0; r < height; r++) {
@@ -129,7 +118,6 @@ class GridProcessor {
           cellSize,
           threshold,
         );
-
         if (ratio > 0.20) {
           grid[r][c] = 1;
         } else if (ratio > 0.04 && useTier2) {
@@ -159,6 +147,9 @@ class GridProcessor {
 
     // ── Stage 9: Border enforcement ───────────────────────────────────────
     processed = _enforceBorder(processed, width, height);
+
+    // ── Stage 10: Connect isolated walkable regions (V18) ─────────────────
+    processed = _connectIsolatedRegions(processed, width, height);
 
     // ── Stats ─────────────────────────────────────────────────────────────
     int wallCells = 0;
@@ -193,7 +184,206 @@ class GridProcessor {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // Helpers
+  // V18: Connect isolated walkable regions safely
+  // ═══════════════════════════════════════════════════════════════════════
+
+  List<List<int>> _connectIsolatedRegions(
+    List<List<int>> grid,
+    int width,
+    int height,
+  ) {
+    final labelResult = _labelRegions(grid, width, height);
+    final labels = labelResult['labels'] as List<List<int>>;
+    final regionSizes = labelResult['regionSizes'] as List<int>;
+    final regionCount = labelResult['regionCount'] as int;
+
+    if (regionCount <= 1) {
+      print('✅ [GRID] All regions connected, no corridors needed');
+      return grid;
+    }
+
+    print('🔵 [GRID] Found $regionCount disconnected regions — connecting...');
+
+    int largestId = 0;
+    int largestSize = 0;
+    for (int i = 0; i < regionSizes.length; i++) {
+      if (regionSizes[i] > largestSize) {
+        largestSize = regionSizes[i];
+        largestId = i;
+      }
+    }
+
+    final regionCells = List.generate(regionCount, (_) => <List<int>>[]);
+    for (int r = 1; r < height - 1; r++) {
+      for (int c = 1; c < width - 1; c++) {
+        final id = labels[r][c];
+        if (id != -1 && (r + c) % 3 == 0) {
+          regionCells[id].add([r, c]);
+        }
+      }
+    }
+
+    final result = grid.map((row) => List<int>.from(row)).toList();
+
+    for (int id = 0; id < regionCount; id++) {
+      if (id == largestId) continue;
+      if (regionSizes[id] < 4) continue;
+
+      final cellsA = regionCells[id];
+      final cellsB = regionCells[largestId];
+      if (cellsA.isEmpty || cellsB.isEmpty) continue;
+
+      // Find pair with lowest wall ratio along corridor
+      double bestScore = double.infinity;
+      List<int> bestA = cellsA[0];
+      List<int> bestB = cellsB[0];
+      bool foundClean = false;
+
+      for (final a in cellsA) {
+        for (final b in cellsB) {
+          final dist = (a[0] - b[0]).abs() + (a[1] - b[1]).abs();
+          final wallRatio = _corridorWallRatio(grid, a[0], a[1], b[0], b[1]);
+          if (wallRatio > 0.5) continue; // skip paths through solid walls
+          final score = dist + wallRatio * 50;
+          if (score < bestScore) {
+            bestScore = score;
+            bestA = a;
+            bestB = b;
+            foundClean = true;
+          }
+        }
+      }
+
+      // Fallback: closest pair regardless of walls
+      if (!foundClean) {
+        int bestDist = 999999;
+        for (final a in cellsA) {
+          for (final b in cellsB) {
+            final dist = (a[0] - b[0]).abs() + (a[1] - b[1]).abs();
+            if (dist < bestDist) {
+              bestDist = dist;
+              bestA = a;
+              bestB = b;
+            }
+          }
+        }
+        print('⚠️  [GRID] Region $id: no clean path, using closest fallback');
+      }
+
+      final ar = bestA[0], ac = bestA[1];
+      final br = bestB[0], bc = bestB[1];
+      final rStep = ar < br ? 1 : -1;
+      final cStep = ac < bc ? 1 : -1;
+
+      for (int r = ar; r != br; r += rStep) {
+        result[r][ac] = 0;
+      }
+      for (int c = ac; c != bc; c += cStep) {
+        result[br][c] = 0;
+      }
+
+      print(
+        '✅ [GRID] Connected region $id (size=${regionSizes[id]}) via ($ar,$ac)→($br,$bc)',
+      );
+    }
+
+    return result;
+  }
+
+  double _corridorWallRatio(
+    List<List<int>> grid,
+    int ar,
+    int ac,
+    int br,
+    int bc,
+  ) {
+    int wallCount = 0;
+    int totalCount = 0;
+    final rStep = ar < br
+        ? 1
+        : ar > br
+        ? -1
+        : 0;
+    final cStep = ac < bc
+        ? 1
+        : ac > bc
+        ? -1
+        : 0;
+
+    if (rStep != 0) {
+      for (int r = ar; r != br; r += rStep) {
+        totalCount++;
+        if (grid[r][ac] == 1) wallCount++;
+      }
+    }
+    if (cStep != 0) {
+      for (int c = ac; c != bc; c += cStep) {
+        totalCount++;
+        if (grid[br][c] == 1) wallCount++;
+      }
+    }
+
+    return totalCount == 0 ? 1.0 : wallCount / totalCount;
+  }
+
+  Map<String, dynamic> _labelRegions(
+    List<List<int>> grid,
+    int width,
+    int height,
+  ) {
+    final labels = List.generate(
+      height,
+      (_) => List.generate(width, (_) => -1),
+    );
+    int regionId = 0;
+    final regionSizes = <int>[];
+
+    for (int r = 0; r < height; r++) {
+      for (int c = 0; c < width; c++) {
+        if (grid[r][c] == 0 && labels[r][c] == -1) {
+          final queue = <List<int>>[
+            [r, c],
+          ];
+          labels[r][c] = regionId;
+          int size = 0;
+          int head = 0;
+          while (head < queue.length) {
+            final cell = queue[head++];
+            final cr = cell[0], cc = cell[1];
+            size++;
+            for (final d in [
+              [-1, 0],
+              [1, 0],
+              [0, -1],
+              [0, 1],
+            ]) {
+              final nr = cr + d[0], nc = cc + d[1];
+              if (nr >= 0 &&
+                  nr < height &&
+                  nc >= 0 &&
+                  nc < width &&
+                  grid[nr][nc] == 0 &&
+                  labels[nr][nc] == -1) {
+                labels[nr][nc] = regionId;
+                queue.add([nr, nc]);
+              }
+            }
+          }
+          regionSizes.add(size);
+          regionId++;
+        }
+      }
+    }
+
+    return {
+      'labels': labels,
+      'regionSizes': regionSizes,
+      'regionCount': regionId,
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Existing helpers (unchanged)
   // ═══════════════════════════════════════════════════════════════════════
 
   List<int> _extractPixels(img.Image grayscale) {
@@ -238,7 +428,6 @@ class GridProcessor {
     final stretched = pixels
         .map((v) => ((v - lo) / range * 255).round().clamp(0, 255))
         .toList();
-    // 2x contrast enhancement
     final mean = stretched.reduce((a, b) => a + b) / stretched.length;
     return stretched
         .map((v) => (mean + (v - mean) * 2.0).round().clamp(0, 255))
@@ -266,15 +455,12 @@ class GridProcessor {
   ) {
     if (grayRange < 200) return 'E_compressed';
     if (avgSat > 25) return 'C_colored';
-
     final histogram = List<int>.filled(256, 0);
     for (final v in grayPixels) histogram[v]++;
     final modeVal = histogram.indexOf(histogram.reduce(max));
     if (modeVal < 245) return 'D_gray_floor';
-
-    // White background — measure wall thickness
     final thresh = _otsuThreshold(grayPixels);
-    final w = sqrt(grayPixels.length.toDouble()).toInt(); // approximate
+    final w = sqrt(grayPixels.length.toDouble()).toInt();
     final medPx = _measureMedianWallPx(grayPixels, w, w, thresh);
     return medPx >= 8 ? 'B_thick_walls' : 'A_thin_walls';
   }

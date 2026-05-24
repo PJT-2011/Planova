@@ -1,6 +1,8 @@
 /**
- * gridProcessor.js — uses 'sharp' instead of Jimp
- * Logic is identical; only image-loading changed.
+ * gridProcessor.js — V18
+ * Uses sharp for image loading.
+ * V18: connectIsolatedRegions() uses wall-density check before carving
+ *      to avoid cutting through solid structural walls.
  */
 
 const sharp = require('sharp');
@@ -46,7 +48,7 @@ function classifyImage(grayPixels, width, height, avgSat, grayRange) {
     : { type: 'A_thin_walls', modeVal };
 }
 
-// ─── Measure median wall pixel thickness ──────────────────────────────────────
+// ─── Measure median wall pixel thickness ─────────────────────────────────────
 function measureMedianWallPx(binary, width, height) {
   const runs = [];
   const startY = Math.floor(height * 0.1);
@@ -155,22 +157,171 @@ function buildGrid(binary, origW, origH, cellSize, useTier2, dilation) {
   return { grid: cleaned, gridW, gridH };
 }
 
+// ─── Flood fill: label all walkable regions ───────────────────────────────────
+function labelRegions(grid, gridW, gridH) {
+  const labels = Array.from({ length: gridH }, () => new Array(gridW).fill(-1));
+  let regionId = 0;
+  const regionSizes = [];
+
+  for (let r = 0; r < gridH; r++) {
+    for (let c = 0; c < gridW; c++) {
+      if (grid[r][c] === 0 && labels[r][c] === -1) {
+        const queue = [[r, c]];
+        labels[r][c] = regionId;
+        let size = 0;
+        let head = 0;
+        while (head < queue.length) {
+          const [cr, cc] = queue[head++];
+          size++;
+          for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+            const nr = cr + dr, nc = cc + dc;
+            if (nr >= 0 && nr < gridH && nc >= 0 && nc < gridW
+              && grid[nr][nc] === 0 && labels[nr][nc] === -1) {
+              labels[nr][nc] = regionId;
+              queue.push([nr, nc]);
+            }
+          }
+        }
+        regionSizes.push(size);
+        regionId++;
+      }
+    }
+  }
+
+  return { labels, regionSizes, regionCount: regionId };
+}
+
+// ─── Count walls along a corridor path ───────────────────────────────────────
+// Returns ratio of wall cells along the L-shaped path between two points.
+// A high ratio means we'd be cutting through many real walls — skip it.
+function corridorWallRatio(grid, ar, ac, br, bc) {
+  let wallCount = 0;
+  let totalCount = 0;
+  const rStep = ar < br ? 1 : ar > br ? -1 : 0;
+  const cStep = ac < bc ? 1 : ac > bc ? -1 : 0;
+
+  // Leg 1: move along rows from A to B's row
+  for (let r = ar; r !== br; r += rStep || 1) {
+    totalCount++;
+    if (grid[r][ac] === 1) wallCount++;
+    if (rStep === 0) break;
+  }
+  // Leg 2: move along columns from A's col to B's col
+  for (let c = ac; c !== bc; c += cStep || 1) {
+    totalCount++;
+    if (grid[br][c] === 1) wallCount++;
+    if (cStep === 0) break;
+  }
+
+  return totalCount === 0 ? 1 : wallCount / totalCount;
+}
+
+// ─── Connect isolated regions safely ─────────────────────────────────────────
+function connectIsolatedRegions(grid, gridW, gridH) {
+  const { labels, regionSizes, regionCount } = labelRegions(grid, gridW, gridH);
+
+  if (regionCount <= 1) {
+    console.log('✅ [GRID] All regions connected, no corridors needed');
+    return grid;
+  }
+
+  console.log(`🔵 [GRID] Found ${regionCount} disconnected regions — connecting...`);
+
+  // Find largest region (main floor)
+  const largestId = regionSizes.indexOf(Math.max(...regionSizes));
+
+  // Collect sampled cells per region
+  const regionCells = Array.from({ length: regionCount }, () => []);
+  for (let r = 1; r < gridH - 1; r++) {
+    for (let c = 1; c < gridW - 1; c++) {
+      if (labels[r][c] !== -1 && (r + c) % 3 === 0) {
+        regionCells[labels[r][c]].push([r, c]);
+      }
+    }
+  }
+
+  const result = grid.map(row => [...row]);
+
+  for (let id = 0; id < regionCount; id++) {
+    if (id === largestId) continue;
+    if (regionSizes[id] < 4) continue; // skip noise
+
+    const cellsA = regionCells[id];
+    const cellsB = regionCells[largestId];
+    if (cellsA.length === 0 || cellsB.length === 0) continue;
+
+    // Find the pair with lowest wall ratio along corridor
+    // (prefer paths that go through thin/no walls rather than solid rooms)
+    let bestScore = Infinity;
+    let bestA = null, bestB = null;
+
+    for (const [ar, ac] of cellsA) {
+      for (const [br, bc] of cellsB) {
+        const dist = Math.abs(ar - br) + Math.abs(ac - bc);
+        const wallRatio = corridorWallRatio(grid, ar, ac, br, bc);
+        // Score = distance + heavy penalty for cutting through walls
+        // wallRatio > 0.5 means more than half the path is through walls — skip
+        if (wallRatio > 0.5) continue;
+        const score = dist + wallRatio * 50;
+        if (score < bestScore) {
+          bestScore = score;
+          bestA = [ar, ac];
+          bestB = [br, bc];
+        }
+      }
+    }
+
+    // If no low-wall path found, fall back to closest pair regardless
+    if (!bestA) {
+      let bestDist = Infinity;
+      for (const [ar, ac] of cellsA) {
+        for (const [br, bc] of cellsB) {
+          const dist = Math.abs(ar - br) + Math.abs(ac - bc);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestA = [ar, ac];
+            bestB = [br, bc];
+          }
+        }
+      }
+      console.log(`⚠️  [GRID] Region ${id}: no clean path found, using closest fallback`);
+    }
+
+    if (!bestA || !bestB) continue;
+
+    const [ar, ac] = bestA;
+    const [br, bc] = bestB;
+    const rStep = ar < br ? 1 : -1;
+    const cStep = ac < bc ? 1 : -1;
+
+    // Carve L-shaped corridor
+    for (let r = ar; r !== br; r += rStep) {
+      result[r][ac] = 0;
+    }
+    for (let c = ac; c !== bc; c += cStep) {
+      result[br][c] = 0;
+    }
+
+    console.log(`✅ [GRID] Connected region ${id} (size=${regionSizes[id]}) via (${ar},${ac})→(${br},${bc}) wallRatio=${bestScore}`);
+  }
+
+  return result;
+}
+
 // ─── Main export ──────────────────────────────────────────────────────────────
 async function processImage(imageBuffer, cellSize = 15) {
   console.log('🔵 [GRID] Starting grid processing...');
 
-  // ── Load image with sharp (replaces Jimp) ────────────────────────────────
   const { data, info } = await sharp(imageBuffer)
-    .ensureAlpha()          // adds alpha channel if missing
-    .raw()                  // raw RGBA pixel buffer
+    .ensureAlpha()
+    .raw()
     .toBuffer({ resolveWithObject: true });
 
   const origW = info.width;
   const origH = info.height;
-  const channels = info.channels; // 4 (RGBA)
+  const channels = info.channels;
   console.log(`✅ [GRID] Image: ${origW}x${origH} channels=${channels}`);
 
-  // Extract grayscale + saturation from RGBA buffer
   const grayPixels = [];
   const rgbPixels = { r: [], g: [], b: [] };
 
@@ -178,7 +329,6 @@ async function processImage(imageBuffer, cellSize = 15) {
     const r = data[i];
     const g = data[i + 1];
     const b = data[i + 2];
-    // alpha = data[i + 3] — ignored
     const gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
     grayPixels.push(gray);
     rgbPixels.r.push(r);
@@ -255,7 +405,10 @@ async function processImage(imageBuffer, cellSize = 15) {
   console.log(`✅ [GRID] thresh=${thresh}, tier2=${useTier2}, dilation=${dilation}`);
 
   const binary = working.map(v => v < thresh ? 1 : 0);
-  const { grid, gridW, gridH } = buildGrid(binary, origW, origH, cellSize, useTier2, dilation);
+  let { grid, gridW, gridH } = buildGrid(binary, origW, origH, cellSize, useTier2, dilation);
+
+  // ── V18: Connect isolated walkable regions safely ────────────────────────
+  grid = connectIsolatedRegions(grid, gridW, gridH);
 
   const flatGrid = grid.flat();
   const wallCells = flatGrid.reduce((s, v) => s + v, 0);

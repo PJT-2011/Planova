@@ -35,19 +35,33 @@ REMOVE completely (leave as white/empty):
 - Watermarks and logos
 - Legend boxes
 - Grid lines
+- Dashed lines, dotted lines, and boundary indicators (soffit lines, ceiling lines, property lines)
+- Any non-structural boundary lines
+
+IMPORTANT EXCEPTION for dashed lines:
+- If a dashed line represents a DOORWAY or PASSAGE THRESHOLD
+  between two rooms or areas (including garage-to-house connections,
+  covered walkways, or breezeways), keep it as an OPEN GAP (white/empty)
+- Do NOT draw it as a wall and do NOT remove the passage entirely
+- The goal is that every enclosed area must remain reachable/connected
+  to the rest of the building through at least one open passage
 
 Output requirements:
 - Pure black walls (#000000) on pure white background (#FFFFFF)
-- Wall lines should be clean and continuous
+- Wall lines should be clean, solid, and continuous
 - Door gaps should be clearly open (white/empty)
 - No gray areas — only black and white
+- No dashed or dotted lines of any kind
 - Same proportions and scale as the original image
+- Do NOT mirror, rotate, or flip the image in any way
+- Maintain exact original orientation
+- Do NOT add any new elements not present in the original
+- Ensure all rooms are connected through doorways — do NOT seal off any room completely
 
 Return ONLY the cleaned image, nothing else.
 `.trim();
 
 // ── Main trigger ──────────────────────────────────────────────────────────────
-// Storage path: floorplans/{userId}/{buildingId}/{floorId}.{ext}
 exports.processFloorplan = onObjectFinalized(
   {
     timeoutSeconds: 300,
@@ -65,7 +79,6 @@ exports.processFloorplan = onObjectFinalized(
       return null;
     }
 
-    // Parse path: floorplans/{userId}/{buildingId}/{floorId}.{ext}
     const parts = filePath.split('/');
     if (parts.length !== 4) {
       console.log(`⏭️  Skipping unexpected path format: ${filePath}`);
@@ -78,7 +91,6 @@ exports.processFloorplan = onObjectFinalized(
 
     console.log(`🔵 Processing: userId=${userId} buildingId=${buildingId} floorId=${floorId}`);
 
-    // Write to buildings/{buildingId}/floors/{floorId}
     const floorRef = db
       .collection('buildings')
       .doc(buildingId)
@@ -94,13 +106,18 @@ exports.processFloorplan = onObjectFinalized(
       console.log(`✅ Downloaded image: ${buffer.length} bytes`);
 
       const apiKey = geminiApiKey.value();
-      const cleanedBuffer = buffer; // await cleanImageWithGemini(buffer, contentType, apiKey);
+      const cleanedBuffer = await cleanImageWithGemini(buffer, contentType, apiKey);
       console.log(`✅ Gemini-cleaned image: ${cleanedBuffer.length} bytes`);
+
+      // ── DEBUG: Save Gemini output ──────────────────────────────────────────
+      const debugPath = `debug/${buildingId}/${floorId}_gemini_cleaned.png`;
+      await bucket.file(debugPath).save(cleanedBuffer, { contentType: 'image/png' });
+      console.log(`🔍 DEBUG: Gemini output saved to ${debugPath}`);
+      // ── END DEBUG ──────────────────────────────────────────────────────────
 
       const gridData = await processImage(cleanedBuffer, 15);
       console.log(`✅ Grid processed: ${gridData.width}x${gridData.height}`);
 
-      // Save processedData back to buildings/.../floors/...
       await floorRef.set({
         status: 'ready',
         processedData: gridData,
@@ -112,12 +129,10 @@ exports.processFloorplan = onObjectFinalized(
 
     } catch (error) {
       console.error(`❌ Error processing floorplan ${floorId}:`, error);
-
       await floorRef.set({
         status: 'failed',
         errorMessage: error.message || 'Unknown error',
       }, { merge: true }).catch(() => { });
-
       throw error;
     }
   }
@@ -130,7 +145,12 @@ async function cleanImageWithGemini(imageBuffer, contentType, apiKey) {
   console.log('🔵 Sending image to Gemini...');
 
   const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
+  const model = genAI.getGenerativeModel({
+    model: 'gemini-2.5-flash-image',
+    generationConfig: {
+      responseModalities: ['TEXT', 'IMAGE'],
+    },
+  });
   const base64Image = imageBuffer.toString('base64');
 
   const result = await model.generateContent([
@@ -154,7 +174,6 @@ async function cleanImageWithGemini(imageBuffer, contentType, apiKey) {
 }
 
 // ── HTTP reprocess endpoint ───────────────────────────────────────────────────
-// POST body: { buildingId, floorId, imagePath }
 exports.reprocessFloorplan = onRequest(
   {
     timeoutSeconds: 300,
@@ -190,6 +209,13 @@ exports.reprocessFloorplan = onRequest(
       const contentType = imagePath.endsWith('.png') ? 'image/png' : 'image/jpeg';
       const apiKey = geminiApiKey.value();
       const cleanedBuffer = await cleanImageWithGemini(buffer, contentType, apiKey);
+
+      // ── DEBUG: Save Gemini output ──────────────────────────────────────────
+      const debugPath = `debug/reprocess/${floorId}_gemini_cleaned.png`;
+      await bucket.file(debugPath).save(cleanedBuffer, { contentType: 'image/png' });
+      console.log(`🔍 DEBUG: Gemini output saved to ${debugPath}`);
+      // ── END DEBUG ──────────────────────────────────────────────────────────
+
       const gridData = await processImage(cleanedBuffer, 15);
 
       await floorRef.set({

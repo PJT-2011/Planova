@@ -84,18 +84,27 @@ class AuthService {
     }
   }
 
-  // ── Sign in with Google ───────────────────────────────────────────────────
-  Future<UserCredential?> signInWithGoogle() async {
+  // ── Step 1: Open Google account picker (no Firebase sign-in yet) ─────────
+  Future<GoogleSignInAccount?> getGoogleAccount() async {
     try {
-      debugPrint('🔵 [Google] Starting sign-in...');
-      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+      debugPrint('🔵 [Google] Opening account picker...');
+      // Force the consent/account picker to always show — prevents silent skip
+      await _googleSignIn.signOut();
+      final googleUser = await _googleSignIn.signIn();
+      if (googleUser == null) debugPrint('🟡 [Google] User cancelled picker');
+      return googleUser;
+    } catch (e) {
+      debugPrint('🔴 [Google] Picker error: $e');
+      throw 'Google sign-in failed: $e';
+    }
+  }
 
-      if (googleUser == null) {
-        debugPrint('🟡 [Google] User cancelled picker');
-        return null;
-      }
-
-      debugPrint('🔵 [Google] Got account: ${googleUser.email}');
+  // ── Step 2: Complete Firebase sign-in with confirmed account ──────────────
+  Future<UserCredential?> signInWithGoogleAccount(
+    GoogleSignInAccount googleUser,
+  ) async {
+    try {
+      debugPrint('🔵 [Google] Signing in with: ${googleUser.email}');
       final GoogleSignInAuthentication googleAuth =
           await googleUser.authentication;
 
@@ -124,11 +133,19 @@ class AuthService {
           'provider': 'google',
         });
       } else {
-        // ✅ use set+merge so it works even if the doc was deleted
+        // Update lastLogin only — don't overwrite photoUrl here
         await _firestore.collection('users').doc(user.uid).set({
           'lastLogin': FieldValue.serverTimestamp(),
-          'photoUrl': user.photoURL,
         }, SetOptions(merge: true));
+
+        // Only sync Google's photo if the user has no custom photo saved
+        final doc = await _firestore.collection('users').doc(user.uid).get();
+        final existingPhoto = doc.data()?['photoUrl'];
+        if (existingPhoto == null && user.photoURL != null) {
+          await _firestore.collection('users').doc(user.uid).set({
+            'photoUrl': user.photoURL,
+          }, SetOptions(merge: true));
+        }
       }
 
       return userCredential;
@@ -139,6 +156,13 @@ class AuthService {
       debugPrint('🔴 [Google] Unknown error: $e');
       throw 'Google sign-in failed: $e';
     }
+  }
+
+  // ── Sign in with Google (single-step convenience wrapper) ─────────────────
+  Future<UserCredential?> signInWithGoogle() async {
+    final googleUser = await getGoogleAccount();
+    if (googleUser == null) return null;
+    return signInWithGoogleAccount(googleUser);
   }
 
   // ── Sign out ──────────────────────────────────────────────────────────────
@@ -201,10 +225,12 @@ class AuthService {
     final ref = _storage.ref('profile_photos/$userId.jpg');
     await ref.putFile(imageFile, SettableMetadata(contentType: 'image/jpeg'));
     final url = await ref.getDownloadURL();
-    // ✅ use set+merge so it works even if the doc was deleted
+    // Save to Firestore
     await _firestore.collection('users').doc(userId).set({
       'photoUrl': url,
     }, SetOptions(merge: true));
+    // Also update Firebase Auth profile so Google sign-in can't overwrite it
+    await _auth.currentUser?.updatePhotoURL(url);
     return url;
   }
 

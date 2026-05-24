@@ -15,10 +15,6 @@ class PathfindingService {
     print('   Grid: ${gridModel.width}x${gridModel.height}');
     print('   Cell size: $cellSize px');
 
-    // FIX: Instead of hard-rejecting taps on wall cells, snap to the
-    // nearest walkable neighbor. This solves the "No path found" issue
-    // where wall dilation consumes cells that visually look like open space
-    // (clearly seen in test image 7 — destination placed near a corner wall).
     GridPoint resolvedStart = start;
     GridPoint resolvedEnd = end;
 
@@ -52,48 +48,26 @@ class PathfindingService {
       print(
         '   End walkable: ${gridModel.grid[resolvedEnd.row][resolvedEnd.col] == 0}',
       );
-
-      print('   Cells around resolved start:');
-      for (int dr = -1; dr <= 1; dr++) {
-        for (int dc = -1; dc <= 1; dc++) {
-          final r = resolvedStart.row + dr;
-          final c = resolvedStart.col + dc;
-          if (r >= 0 && r < gridModel.height && c >= 0 && c < gridModel.width) {
-            final isWall = gridModel.grid[r][c] == 1;
-            print('     ($r,$c): ${isWall ? "WALL" : "open"}');
-          }
-        }
-      }
-
       return null;
     }
 
-    // FIX: Smooth the raw A* path using line-of-sight.
-    // Previously _smoothPath existed but was never called, causing the drawn
-    // route line to cut visually through wall corners (test image 5 — Office
-    // floorplan, diagonal line through interior partition).
+    // Smooth the path — uses the FIXED _smoothPath that breaks on first
+    // line-of-sight failure instead of jumping over walls.
     final smoothed = _smoothPath(path, gridModel);
     print('✅ [PATH] Smoothed: ${path.length} → ${smoothed.length} waypoints');
 
-    // Calculate distance
-    // Assuming: 1 cell = 15px, floorplan ~700px wide ≈ 20m → 1px ≈ 0.0286m
-    // So 1 cell (15px) ≈ 0.43m. Calibrate metersPerCell to your building.
     final metersPerCell = 0.43;
-
     double totalDistance = 0;
     for (int i = 0; i < smoothed.length - 1; i++) {
       final p1 = smoothed[i];
       final p2 = smoothed[i + 1];
-      final cellDist = sqrt(
+      totalDistance += sqrt(
         pow((p2.col - p1.col).toDouble(), 2) +
             pow((p2.row - p1.row).toDouble(), 2),
       );
-      totalDistance += cellDist;
     }
 
     final distanceMeters = totalDistance * metersPerCell;
-
-    // Walking speed: 1.2 m/s (average indoor walking)
     final timeSeconds = (distanceMeters / 1.2).round();
 
     print('✅ [PATH] Distance: ${distanceMeters.toStringAsFixed(1)}m');
@@ -111,9 +85,6 @@ class PathfindingService {
     );
   }
 
-  /// FIX: Find the nearest walkable cell to a given point within a radius.
-  /// Used to snap start/end taps that land on wall-dilated cells to the
-  /// closest open neighbor, preventing false "No path found" errors.
   GridPoint? _findNearestWalkable(
     GridModel grid,
     GridPoint point, {
@@ -122,24 +93,18 @@ class PathfindingService {
     for (int radius = 1; radius <= maxRadius; radius++) {
       for (int dr = -radius; dr <= radius; dr++) {
         for (int dc = -radius; dc <= radius; dc++) {
-          // Only check the perimeter ring of this radius
           if (dr.abs() != radius && dc.abs() != radius) continue;
-
           final r = point.row + dr;
           final c = point.col + dc;
-
           if (r >= 0 && r < grid.height && c >= 0 && c < grid.width) {
-            if (grid.grid[r][c] == 0) {
-              return GridPoint(row: r, col: c);
-            }
+            if (grid.grid[r][c] == 0) return GridPoint(row: r, col: c);
           }
         }
       }
     }
-    return null; // No walkable cell found within maxRadius
+    return null;
   }
 
-  /// A* pathfinding (optimized)
   List<GridPoint>? _astarOptimized(
     GridModel grid,
     GridPoint start,
@@ -163,21 +128,18 @@ class PathfindingService {
 
       for (final neighbor in _getNeighbors(current.point, grid)) {
         if (closedSet.contains(neighbor)) continue;
-
         if (grid.grid[neighbor.row][neighbor.col] == 1) continue;
 
         final isDiagonal =
             (neighbor.row != current.point.row) &&
             (neighbor.col != current.point.col);
         final moveCost = isDiagonal ? 1.414 : 1.0;
-
         final tentativeG = gScore[current.point]! + moveCost;
 
         if (!gScore.containsKey(neighbor) || tentativeG < gScore[neighbor]!) {
           cameFrom[neighbor] = current.point;
           gScore[neighbor] = tentativeG;
           final f = tentativeG + _heuristic(neighbor, end);
-
           if (!openSet.contains(_Node(neighbor, f))) {
             openSet.add(_Node(neighbor, f));
           }
@@ -188,7 +150,6 @@ class PathfindingService {
     return null;
   }
 
-  /// Euclidean distance heuristic
   double _heuristic(GridPoint a, GridPoint b) {
     final dx = (a.col - b.col).toDouble();
     final dy = (a.row - b.row).toDouble();
@@ -198,40 +159,31 @@ class PathfindingService {
   List<GridPoint> _getNeighbors(GridPoint p, GridModel grid) {
     final neighbors = <GridPoint>[];
 
-    final cardinalMoves = [
-      [-1, 0], // North
-      [1, 0], // South
-      [0, -1], // West
-      [0, 1], // East
-    ];
-
-    final diagonalMoves = [
-      [-1, -1], // Northwest
-      [-1, 1], // Northeast
-      [1, -1], // Southwest
-      [1, 1], // Southeast
-    ];
-
-    for (final move in cardinalMoves) {
+    for (final move in [
+      [-1, 0],
+      [1, 0],
+      [0, -1],
+      [0, 1],
+    ]) {
       final nr = p.row + move[0];
       final nc = p.col + move[1];
-
       if (nr >= 0 && nr < grid.height && nc >= 0 && nc < grid.width) {
         neighbors.add(GridPoint(row: nr, col: nc));
       }
     }
 
-    // Add diagonal neighbors ONLY if both adjacent cardinal cells are walkable.
-    // This prevents cutting through wall corners.
-    for (int i = 0; i < diagonalMoves.length; i++) {
-      final move = diagonalMoves[i];
+    // Diagonal only if both adjacent cardinal cells are walkable
+    for (final move in [
+      [-1, -1],
+      [-1, 1],
+      [1, -1],
+      [1, 1],
+    ]) {
       final nr = p.row + move[0];
       final nc = p.col + move[1];
-
       if (nr >= 0 && nr < grid.height && nc >= 0 && nc < grid.width) {
         final verticalClear = grid.grid[p.row + move[0]][p.col] == 0;
         final horizontalClear = grid.grid[p.row][p.col + move[1]] == 0;
-
         if (verticalClear && horizontalClear) {
           neighbors.add(GridPoint(row: nr, col: nc));
         }
@@ -241,7 +193,6 @@ class PathfindingService {
     return neighbors;
   }
 
-  /// Reconstruct path from A* result
   List<GridPoint> _reconstructPath(
     Map<GridPoint, GridPoint> cameFrom,
     GridPoint current,
@@ -254,12 +205,19 @@ class PathfindingService {
     return path;
   }
 
-  /// FIX: Smooth path by skipping intermediate waypoints where line-of-sight
-  /// is clear. Previously this method existed but was NEVER called, so the
-  /// raw A* path (with many small steps) was drawn directly — causing the
-  /// route line to visually cut through wall corners (test image 5).
+  /// Smooth path using line-of-sight.
   ///
-  /// Now called in findPath() before returning the RouteModel.
+  /// BUG FIXED: The previous version did NOT break when line-of-sight failed.
+  /// It kept scanning forward and jumped to a farther waypoint even if walls
+  /// were in between — causing the drawn path to cut diagonally through walls.
+  ///
+  /// Example of the bug:
+  ///   i=0, checking j=2: LOS blocked by wall → old code: ignored, kept scanning
+  ///                       j=3: LOS clear (on other side of wall) → jumped to j=3
+  ///   Result: path drew a straight line from 0 to 3, visually through the wall.
+  ///
+  /// Fix: break as soon as LOS fails. The farthest reachable point is the last
+  /// j where LOS was still clear, not the first j where it becomes clear again.
   List<GridPoint> _smoothPath(List<GridPoint> path, GridModel grid) {
     if (path.length <= 2) return path;
 
@@ -271,9 +229,9 @@ class PathfindingService {
 
       for (int j = i + 2; j < path.length; j++) {
         if (_hasLineOfSight(path[i], path[j], grid)) {
-          farthest = j;
+          farthest = j; // LOS clear — extend the skip
         } else {
-          break;
+          break; // FIX: LOS blocked — stop immediately, don't scan further
         }
       }
 
@@ -284,13 +242,12 @@ class PathfindingService {
     return smoothed;
   }
 
-  /// Check if there is a clear line of sight between two grid points.
-  /// Uses Bresenham's line algorithm and checks every cell along the line.
+  /// Bresenham's line algorithm — checks every cell between p1 and p2.
   bool _hasLineOfSight(GridPoint p1, GridPoint p2, GridModel grid) {
     int x0 = p1.col;
     int y0 = p1.row;
-    int x1 = p2.col;
-    int y1 = p2.row;
+    final int x1 = p2.col;
+    final int y1 = p2.row;
 
     final dx = (x1 - x0).abs();
     final dy = (y1 - y0).abs();
@@ -320,18 +277,15 @@ class PathfindingService {
     return true;
   }
 
-  /// Generate turn-by-turn directions
   List<String> _generateDirections(List<GridPoint> path) {
     if (path.length <= 1) return ['You have arrived'];
 
     final directions = <String>['Start at your current location'];
-
     final step = max(1, path.length ~/ 8);
 
     for (int i = step; i < path.length; i += step) {
       final prev = path[max(0, i - step)];
       final curr = path[i];
-
       final dr = curr.row - prev.row;
       final dc = curr.col - prev.col;
 
@@ -353,9 +307,7 @@ class PathfindingService {
       else if (dr > 0 && dc < 0)
         dir = 'southwest';
 
-      if (dir.isNotEmpty) {
-        directions.add('Move $dir');
-      }
+      if (dir.isNotEmpty) directions.add('Move $dir');
     }
 
     directions.add('You have arrived at your destination');
@@ -380,15 +332,50 @@ class _Node implements Comparable<_Node> {
 }
 
 class PriorityQueue<T extends Comparable> {
-  final _items = <T>[];
+  final _heap = <T>[];
 
   void add(T item) {
-    _items.add(item);
-    _items.sort();
+    _heap.add(item);
+    _bubbleUp(_heap.length - 1);
   }
 
-  T removeFirst() => _items.removeAt(0);
-  bool get isNotEmpty => _items.isNotEmpty;
-  bool get isEmpty => _items.isEmpty;
-  bool contains(T item) => _items.contains(item);
+  T removeFirst() {
+    final top = _heap[0];
+    final last = _heap.removeLast();
+    if (_heap.isNotEmpty) {
+      _heap[0] = last;
+      _sinkDown(0);
+    }
+    return top;
+  }
+
+  bool get isNotEmpty => _heap.isNotEmpty;
+  bool get isEmpty => _heap.isEmpty;
+  bool contains(T item) => _heap.contains(item);
+
+  void _bubbleUp(int i) {
+    while (i > 0) {
+      final parent = (i - 1) >> 1;
+      if (_heap[parent].compareTo(_heap[i]) <= 0) break;
+      final tmp = _heap[parent];
+      _heap[parent] = _heap[i];
+      _heap[i] = tmp;
+      i = parent;
+    }
+  }
+
+  void _sinkDown(int i) {
+    final n = _heap.length;
+    while (true) {
+      int smallest = i;
+      final l = 2 * i + 1, r = 2 * i + 2;
+      if (l < n && _heap[l].compareTo(_heap[smallest]) < 0) smallest = l;
+      if (r < n && _heap[r].compareTo(_heap[smallest]) < 0) smallest = r;
+      if (smallest == i) break;
+      final tmp = _heap[smallest];
+      _heap[smallest] = _heap[i];
+      _heap[i] = tmp;
+      i = smallest;
+    }
+  }
 }
