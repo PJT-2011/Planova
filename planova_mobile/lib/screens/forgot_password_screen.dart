@@ -61,7 +61,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       body: SingleChildScrollView(
         child: Column(
           children: [
-            // ── Gradient header ───────────────────────────────────────────
+            // Gradient header
             Container(
               width: double.infinity,
               decoration: BoxDecoration(
@@ -147,7 +147,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
               ),
             ),
 
-            // ── Card body ─────────────────────────────────────────────────
+            // Card body
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 24, 20, 40),
               child: AnimatedSwitcher(
@@ -187,7 +187,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   }
 }
 
-// ── Form card ─────────────────────────────────────────────────────────────────
+// Form card
 
 class _FormCard extends StatelessWidget {
   final TextEditingController emailController;
@@ -287,7 +287,7 @@ class _FormCard extends StatelessWidget {
   }
 }
 
-// ── Success card ──────────────────────────────────────────────────────────────
+// Success card
 
 class _SuccessCard extends StatelessWidget {
   final String email;

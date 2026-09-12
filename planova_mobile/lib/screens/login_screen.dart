@@ -131,7 +131,7 @@ class _LoginScreenState extends State<LoginScreen> {
       backgroundColor: c.background,
       body: Column(
         children: [
-          // ── Gradient hero header ──────────────────────────────────────────
+          // Gradient hero header
           Expanded(
             flex: 3,
             child: Container(
@@ -206,7 +206,7 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
           ),
 
-          // ── Form card ─────────────────────────────────────────────────────
+          // Form card
           Expanded(
             flex: 7,
             child: SingleChildScrollView(
@@ -406,7 +406,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-// ── Gradient CTA button ───────────────────────────────────────────────────────
+// Gradient CTA button
 
 class _GradientButton extends StatelessWidget {
   final String label;
@@ -458,7 +458,7 @@ class _GradientButton extends StatelessWidget {
   }
 }
 
-// ── OR divider ────────────────────────────────────────────────────────────────
+// OR divider
 
 class _OrDivider extends StatelessWidget {
   final AppColors c;
@@ -483,7 +483,7 @@ class _OrDivider extends StatelessWidget {
   }
 }
 
-// ── Social button ─────────────────────────────────────────────────────────────
+// Social button
 
 class _SocialButton extends StatelessWidget {
   final Widget icon;
@@ -546,7 +546,7 @@ class _SocialButton extends StatelessWidget {
   }
 }
 
-// ── Google "G" icon ───────────────────────────────────────────────────────────
+// Google "G" icon
 
 class _GoogleIcon extends StatelessWidget {
   const _GoogleIcon();

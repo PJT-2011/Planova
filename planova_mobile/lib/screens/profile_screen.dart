@@ -52,7 +52,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  // ── Edit name ─────────────────────────────────────────────────────────────
+  // Edit name
 
   Future<void> _editName() async {
     if (!mounted) return;
@@ -161,7 +161,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  // ── Change photo — pick → crop → upload ───────────────────────────────────
+  // Change photo: pick, crop, upload
 
   Future<void> _changePhoto() async {
     if (!mounted) return;
@@ -321,7 +321,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  // ── Sign out ──────────────────────────────────────────────────────────────
+  // Sign out
 
   Future<void> _signOut() async {
     if (!mounted) return;
@@ -436,7 +436,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────────
+  // Build
 
   @override
   Widget build(BuildContext context) {
@@ -458,7 +458,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       body: SingleChildScrollView(
         child: Column(
           children: [
-            // ── Gradient hero header ─────────────────────────────────────
+            // Gradient hero header
             Container(
               width: double.infinity,
               decoration: BoxDecoration(
@@ -683,7 +683,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
             ),
 
-            // ── Cards ────────────────────────────────────────────────────
+            // Cards
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
               child: Column(
@@ -803,7 +803,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 }
 
-// ── Reusable sub-widgets ──────────────────────────────────────────────────────
+// Reusable sub-widgets
 
 class _SectionCard extends StatelessWidget {
   final bool isDark;
@@ -936,7 +936,7 @@ class _NavTile extends StatelessWidget {
   }
 }
 
-// ── Source picker tile ────────────────────────────────────────────────────────
+// Source picker tile
 
 class _SourceTile extends StatelessWidget {
   final IconData icon;

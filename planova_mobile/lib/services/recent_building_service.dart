@@ -80,11 +80,8 @@ class RecentBuildingService {
       final encoded = jsonEncode(trimmed.map((e) => e.toJson()).toList());
       await prefs.setString(_key(userId), encoded);
 
-      debugPrint(
-        '✅ [RecentBuildingService] Saved "${building.buildingName}" for user $userId',
-      );
-    } catch (e) {
-      debugPrint('❌ [RecentBuildingService] Failed to save: $e');
+    } catch (_) {
+      // Non-critical: safe to ignore.
     }
   }
 
@@ -100,7 +97,6 @@ class RecentBuildingService {
           .map((e) => RecentBuildingEntry.fromJson(e as Map<String, dynamic>))
           .toList();
     } catch (e) {
-      debugPrint('❌ [RecentBuildingService] Failed to load: $e');
       return [];
     }
   }
@@ -113,8 +109,8 @@ class RecentBuildingService {
       entries.removeWhere((e) => e.buildingId == buildingId);
       final encoded = jsonEncode(entries.map((e) => e.toJson()).toList());
       await prefs.setString(_key(userId), encoded);
-    } catch (e) {
-      debugPrint('❌ [RecentBuildingService] Failed to remove: $e');
+    } catch (_) {
+      // Non-critical: safe to ignore.
     }
   }
 
@@ -123,8 +119,8 @@ class RecentBuildingService {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(_key(userId));
-    } catch (e) {
-      debugPrint('❌ [RecentBuildingService] Failed to clear: $e');
+    } catch (_) {
+      // Non-critical: safe to ignore.
     }
   }
 }

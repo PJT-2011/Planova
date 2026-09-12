@@ -3,7 +3,9 @@ import 'package:planova_mobile/models/building_model.dart';
 import 'package:planova_mobile/models/floor_model.dart';
 import 'package:planova_mobile/models/room_model.dart';
 import 'package:planova_mobile/services/building_service.dart';
+import 'package:planova_mobile/services/access_control_service.dart';
 import 'package:planova_mobile/screens/navigation_screen_with_rooms.dart';
+import 'package:planova_mobile/screens/floor_access_request_screen.dart';
 import 'package:planova_mobile/theme/app_theme.dart';
 import 'package:planova_mobile/widgets/skeletons.dart';
 import 'package:planova_mobile/main.dart';
@@ -25,9 +27,13 @@ class FloorSelectionScreen extends StatefulWidget {
 class _FloorSelectionScreenState extends State<FloorSelectionScreen>
     with SingleTickerProviderStateMixin {
   final BuildingService _buildingService = BuildingService();
+  final AccessControlService _accessService = AccessControlService();
 
   List<FloorModel> _floors = [];
   Map<String, List<RoomModel>> _roomsByFloor = {};
+  // floorId -> whether the current user can access it right now
+  // (permanent access or an active temporary grant).
+  Map<String, bool> _accessByFloorId = {};
   bool _isLoading = true;
   TabController? _tabController;
   int _currentFloorIndex = 0;
@@ -71,15 +77,43 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
         }
       });
     } catch (e) {
-      debugPrint('❌ [FloorSelection] Error: $e');
       if (mounted) setState(() => _isLoading = false);
+      return;
+    }
+
+    // Access checks run after — and independently of — the core floor/room
+    // load, one floor at a time, so a rules/index problem on the new
+    // access-control collections can never blank out the floor list
+    // itself. Each check fails open (treated as accessible) on error,
+    // matching this feature's actual security model: floor restriction is
+    // a UI-level gate layered on top of otherwise-unrestricted floor/room
+    // documents, not something enforced by Firestore rules on the floor
+    // data itself.
+    for (final floor in _floors) {
+      try {
+        final canAccess = await _accessService.canAccessFloor(
+          buildingId: widget.building.id,
+          userId: widget.userId,
+          floorNumber: floor.floorNumber,
+        );
+        if (mounted) setState(() => _accessByFloorId[floor.id] = canAccess);
+      } catch (e) {
+        debugPrint('Floor access check failed for ${floor.id}: $e');
+        if (mounted) setState(() => _accessByFloorId[floor.id] = true);
+      }
     }
   }
 
   FloorModel get _currentFloor => _floors[_currentFloorIndex];
   List<RoomModel> get _currentRooms => _roomsByFloor[_currentFloor.id] ?? [];
 
+  bool _hasAccess(FloorModel floor) => _accessByFloorId[floor.id] ?? true;
+
   void _openNavigation(FloorModel floor, {RoomModel? targetRoom}) {
+    if (!_hasAccess(floor)) {
+      _openRequestAccess(floor);
+      return;
+    }
     Navigator.push(
       context,
       PlanovaModalRoute(
@@ -90,6 +124,19 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
         ),
       ),
     );
+  }
+
+  void _openRequestAccess(FloorModel floor) {
+    Navigator.push(
+      context,
+      PlanovaPageRoute(
+        builder: (_) => FloorAccessRequestScreen(
+          building: widget.building,
+          userId: widget.userId,
+          preselectedFloor: floor,
+        ),
+      ),
+    ).then((_) => _loadBuildingData());
   }
 
   @override
@@ -174,6 +221,22 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
             ),
           ],
         ),
+        actions: [
+          IconButton(
+            icon: Icon(Icons.lock_open_rounded, color: c.onBackground, size: 22),
+            tooltip: 'Floor access',
+            onPressed: () => Navigator.push(
+              context,
+              PlanovaPageRoute(
+                builder: (_) => FloorAccessRequestScreen(
+                  building: widget.building,
+                  userId: widget.userId,
+                ),
+              ),
+            ).then((_) => _loadBuildingData()),
+          ),
+          const SizedBox(width: 4),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(48),
           child: Container(
@@ -196,15 +259,30 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Text(
-                            floor.floorNumber.toString(),
-                            style: const TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700,
-                            ),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (!_hasAccess(floor)) ...[
+                                Icon(
+                                  Icons.lock_rounded,
+                                  size: 12,
+                                  color: c.warning,
+                                ),
+                                const SizedBox(width: 3),
+                              ],
+                              Text(
+                                floor.floorNumber.toString(),
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
                           ),
                           Text(
-                            '${_roomsByFloor[floor.id]?.length ?? 0} rooms',
+                            _hasAccess(floor)
+                                ? '${_roomsByFloor[floor.id]?.length ?? 0} rooms'
+                                : 'Restricted',
                             style: const TextStyle(fontSize: 10),
                           ),
                         ],
@@ -233,6 +311,10 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
     TextTheme tt,
     bool isDark,
   ) {
+    if (!_hasAccess(floor)) {
+      return _buildRestrictedFloorState(floor, c, tt);
+    }
+
     return Column(
       children: [
         // Search bar
@@ -333,6 +415,79 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
     );
   }
 
+  Widget _buildRestrictedFloorState(
+    FloorModel floor,
+    AppColors c,
+    TextTheme tt,
+  ) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 92,
+              height: 92,
+              decoration: BoxDecoration(
+                color: c.warning.withValues(alpha: 0.12),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(Icons.lock_rounded, size: 44, color: c.warning),
+            ),
+            const SizedBox(height: 24),
+            Text(
+              'This floor is restricted',
+              style: tt.headlineSmall?.copyWith(
+                color: c.onBackground,
+                fontWeight: FontWeight.w700,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'You don\'t currently have access to ${floor.floorName}. '
+              'You can request temporary access from the admin.',
+              style: tt.bodyMedium?.copyWith(
+                color: c.onSurfaceSecondary,
+                height: 1.5,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 28),
+            GestureDetector(
+              onTap: () => _openRequestAccess(floor),
+              child: Container(
+                height: 54,
+                padding: const EdgeInsets.symmetric(horizontal: 28),
+                decoration: BoxDecoration(
+                  gradient: heroGradient(),
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                  boxShadow: AppShadows.primaryGlow(c.primary),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.lock_open_rounded,
+                      color: Colors.white,
+                      size: 18,
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      'Request Access',
+                      style: tt.labelLarge?.copyWith(color: Colors.white),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildEmptyRoomState(FloorModel floor, AppColors c, TextTheme tt) {
     return Center(
       child: Padding(
@@ -394,18 +549,33 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
     TextTheme tt,
     bool isDark,
   ) {
+    final offLimits = room.isOffLimits;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       decoration: isDark
           ? BoxDecoration(
-              color: const Color(0xFF1C2942),
+              color: offLimits
+                  ? c.error.withValues(alpha: 0.06)
+                  : const Color(0xFF1C2942),
               borderRadius: BorderRadius.circular(AppRadius.lg),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+              border: Border.all(
+                color: offLimits
+                    ? c.error.withValues(alpha: 0.30)
+                    : Colors.white.withValues(alpha: 0.08),
+              ),
             )
-          : lightCardDecoration(),
+          : lightCardDecoration().copyWith(
+              color: offLimits ? c.error.withValues(alpha: 0.05) : null,
+              border: offLimits
+                  ? Border.all(color: c.error.withValues(alpha: 0.25))
+                  : null,
+            ),
       child: InkWell(
         borderRadius: BorderRadius.circular(AppRadius.lg),
-        onTap: () => _navigateToRoom(floor, room),
+        onTap: offLimits
+            ? () => _showOffLimitsNotice(room)
+            : () => _navigateToRoom(floor, room),
         child: Padding(
           padding: const EdgeInsets.all(14),
           child: Row(
@@ -414,16 +584,19 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
                 width: 44,
                 height: 44,
                 decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFF1450A8), Color(0xFF3B82F6)],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
+                  gradient: offLimits
+                      ? null
+                      : const LinearGradient(
+                          colors: [Color(0xFF1450A8), Color(0xFF3B82F6)],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                  color: offLimits ? c.error.withValues(alpha: 0.14) : null,
                   borderRadius: BorderRadius.circular(AppRadius.sm),
                 ),
-                child: const Icon(
-                  Icons.meeting_room_rounded,
-                  color: Colors.white,
+                child: Icon(
+                  offLimits ? Icons.block_rounded : Icons.meeting_room_rounded,
+                  color: offLimits ? c.error : Colors.white,
                   size: 20,
                 ),
               ),
@@ -432,12 +605,42 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      room.name,
-                      style: tt.titleSmall?.copyWith(
-                        color: c.onSurface,
-                        fontWeight: FontWeight.w600,
-                      ),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            room.name,
+                            style: tt.titleSmall?.copyWith(
+                              color: c.onSurface,
+                              fontWeight: FontWeight.w600,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (offLimits) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: c.error.withValues(alpha: 0.14),
+                              borderRadius: BorderRadius.circular(
+                                AppRadius.full,
+                              ),
+                            ),
+                            child: Text(
+                              'OFF-LIMITS',
+                              style: tt.labelSmall?.copyWith(
+                                color: c.error,
+                                fontWeight: FontWeight.w700,
+                                fontSize: 9,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                     const SizedBox(height: 2),
                     Text(
@@ -449,7 +652,11 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
                   ],
                 ),
               ),
-              Icon(Icons.chevron_right_rounded, color: c.iconMuted, size: 20),
+              Icon(
+                offLimits ? Icons.lock_outline_rounded : Icons.chevron_right_rounded,
+                color: offLimits ? c.error : c.iconMuted,
+                size: 20,
+              ),
             ],
           ),
         ),
@@ -457,7 +664,23 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
     );
   }
 
+  void _showOffLimitsNotice(RoomModel room) {
+    final c = AppTheme.colors(context);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '${room.name} is off-limits${room.offLimitsNote != null ? ': ${room.offLimitsNote}' : '.'}',
+        ),
+        backgroundColor: c.error,
+      ),
+    );
+  }
+
   void _navigateToRoom(FloorModel floor, RoomModel room) {
+    if (room.isOffLimits) {
+      _showOffLimitsNotice(room);
+      return;
+    }
     final c = AppTheme.colors(context);
     final tt = Theme.of(context).textTheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;

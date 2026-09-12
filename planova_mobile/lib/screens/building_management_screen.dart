@@ -4,6 +4,9 @@ import 'package:planova_mobile/models/building_model.dart';
 import 'package:planova_mobile/services/building_service.dart';
 import 'package:planova_mobile/screens/floor_management_screen.dart';
 import 'package:planova_mobile/screens/qr_generator_screen.dart';
+import 'package:planova_mobile/screens/user_management_screen.dart';
+import 'package:planova_mobile/screens/access_requests_screen.dart';
+import 'package:planova_mobile/screens/access_history_screen.dart';
 import 'package:planova_mobile/theme/app_theme.dart';
 import 'package:planova_mobile/widgets/skeletons.dart';
 import 'package:planova_mobile/main.dart';
@@ -42,12 +45,11 @@ class _BuildingManagementScreenState extends State<BuildingManagementScreen> {
         _isLoading = false;
       });
     } catch (e) {
-      debugPrint('❌ [BuildingManagement] Error: $e');
       setState(() => _isLoading = false);
     }
   }
 
-  // ── Create ────────────────────────────────────────────────────────────────
+  // Create
 
   Future<void> _showCreateSheet() async {
     final nameController = TextEditingController();
@@ -202,7 +204,7 @@ class _BuildingManagementScreenState extends State<BuildingManagementScreen> {
     }
   }
 
-  // ── Delete with swipe + confirmation sheet ────────────────────────────────
+  // Delete with swipe + confirmation sheet
 
   /// Called when the user finishes the swipe gesture.
   /// Shows a confirmation bottom sheet; if they cancel we put the
@@ -384,7 +386,7 @@ class _BuildingManagementScreenState extends State<BuildingManagementScreen> {
     }
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────────
+  // Build
 
   @override
   Widget build(BuildContext context) {
@@ -441,7 +443,7 @@ class _BuildingManagementScreenState extends State<BuildingManagementScreen> {
     );
   }
 
-  // ── Swipeable building card ───────────────────────────────────────────────
+  // Swipeable building card
 
   Widget _buildSwipeableCard(
     BuildingModel building,
@@ -497,12 +499,15 @@ class _BuildingManagementScreenState extends State<BuildingManagementScreen> {
           onManageFloors: () => _openFloorManagement(building),
           onQRCode: () => _openQRGenerator(building),
           onDeleteTap: () => _confirmDeleteBuilding(building),
+          onUsers: () => _openUserManagement(building),
+          onAccessRequests: () => _openAccessRequests(building),
+          onAccessHistory: () => _openAccessHistory(building),
         ),
       ),
     );
   }
 
-  // ── Empty state ───────────────────────────────────────────────────────────
+  // Empty state
 
   Widget _buildEmptyState(AppColors c, TextTheme tt) {
     return Center(
@@ -583,9 +588,36 @@ class _BuildingManagementScreenState extends State<BuildingManagementScreen> {
       PlanovaPageRoute(builder: (_) => QRGeneratorScreen(building: building)),
     );
   }
+
+  void _openUserManagement(BuildingModel building) {
+    Navigator.push(
+      context,
+      PlanovaPageRoute(
+        builder: (_) => UserManagementScreen(building: building),
+      ),
+    );
+  }
+
+  void _openAccessRequests(BuildingModel building) {
+    Navigator.push(
+      context,
+      PlanovaPageRoute(
+        builder: (_) => AccessRequestsScreen(building: building),
+      ),
+    );
+  }
+
+  void _openAccessHistory(BuildingModel building) {
+    Navigator.push(
+      context,
+      PlanovaPageRoute(
+        builder: (_) => AccessHistoryScreen(building: building),
+      ),
+    );
+  }
 }
 
-// ── Building card widget ──────────────────────────────────────────────────────
+// Building card widget
 
 class _BuildingCard extends StatelessWidget {
   final BuildingModel building;
@@ -596,6 +628,9 @@ class _BuildingCard extends StatelessWidget {
   final VoidCallback onManageFloors;
   final VoidCallback onQRCode;
   final VoidCallback onDeleteTap;
+  final VoidCallback onUsers;
+  final VoidCallback onAccessRequests;
+  final VoidCallback onAccessHistory;
 
   const _BuildingCard({
     required this.building,
@@ -606,6 +641,9 @@ class _BuildingCard extends StatelessWidget {
     required this.onManageFloors,
     required this.onQRCode,
     required this.onDeleteTap,
+    required this.onUsers,
+    required this.onAccessRequests,
+    required this.onAccessHistory,
   });
 
   BoxDecoration get _deco => isDark
@@ -806,6 +844,87 @@ class _BuildingCard extends StatelessWidget {
                   ),
                 ),
               ],
+            ),
+            const SizedBox(height: 10),
+
+            // Access-control secondary actions
+            Row(
+              children: [
+                Expanded(
+                  child: _SecondaryActionButton(
+                    icon: Icons.people_outline_rounded,
+                    label: 'Users',
+                    c: c,
+                    tt: tt,
+                    onTap: onUsers,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _SecondaryActionButton(
+                    icon: Icons.mark_email_unread_outlined,
+                    label: 'Requests',
+                    c: c,
+                    tt: tt,
+                    onTap: onAccessRequests,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _SecondaryActionButton(
+                    icon: Icons.history_rounded,
+                    label: 'History',
+                    c: c,
+                    tt: tt,
+                    onTap: onAccessHistory,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SecondaryActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final AppColors c;
+  final TextTheme tt;
+  final VoidCallback onTap;
+
+  const _SecondaryActionButton({
+    required this.icon,
+    required this.label,
+    required this.c,
+    required this.tt,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 38,
+        decoration: BoxDecoration(
+          color: c.surfaceElevated,
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          border: Border.all(color: c.border),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 14, color: c.onSurfaceSecondary),
+            const SizedBox(width: 5),
+            Text(
+              label,
+              style: tt.labelSmall?.copyWith(
+                color: c.onSurfaceSecondary,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ],
         ),

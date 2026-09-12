@@ -91,7 +91,6 @@ class GridMetadata {
   }
 }
 
-// ✅ ADDED: GridPoint class (was missing!)
 class GridPoint {
   final int row;
   final int col;

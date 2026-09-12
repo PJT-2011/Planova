@@ -36,7 +36,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
     _OnboardingData(
       title: 'AI-Powered\nProcessing',
       description:
-          'Our AI automatically detects walls, doorways, and navigable spaces to build the perfect map.',
+          'Automatically detects walls, doorways, and navigable spaces to build the perfect map.',
       icon: Icons.auto_awesome_rounded,
       gradientEnd: Color(0xFF1D4ED8),
     ),
@@ -104,7 +104,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
     return Scaffold(
       body: Stack(
         children: [
-          // ── Full-screen gradient background (animates per slide) ─────────
+          // Full-screen gradient background (animates per slide)
           AnimatedContainer(
             duration: const Duration(milliseconds: 400),
             curve: Curves.easeInOut,
@@ -117,7 +117,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
             ),
           ),
 
-          // ── Decorative circles ───────────────────────────────────────────
+          // Decorative circles
           Positioned(
             top: -60,
             right: -60,
@@ -143,7 +143,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
             ),
           ),
 
-          // ── Main content ─────────────────────────────────────────────────
+          // Main content
           SafeArea(
             child: Column(
               children: [
@@ -182,7 +182,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
                   ),
                 ),
 
-                // ── Bottom controls ──────────────────────────────────────
+                // Bottom controls
                 Padding(
                   padding: const EdgeInsets.fromLTRB(28, 0, 28, 40),
                   child: Column(
@@ -252,7 +252,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
   }
 }
 
-// ── Page Content ──────────────────────────────────────────────────────────────
+// Page Content
 
 class _PageContent extends StatelessWidget {
   final _OnboardingData data;
@@ -305,7 +305,7 @@ class _PageContent extends StatelessWidget {
   }
 }
 
-// ── Animated pill dot ─────────────────────────────────────────────────────────
+// Animated pill dot
 
 class _Dot extends StatelessWidget {
   final bool active;
@@ -327,7 +327,7 @@ class _Dot extends StatelessWidget {
   }
 }
 
-// ── Data model ────────────────────────────────────────────────────────────────
+// Data model
 
 class _OnboardingData {
   final String title;

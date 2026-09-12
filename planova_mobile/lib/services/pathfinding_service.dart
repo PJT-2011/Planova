@@ -10,10 +10,6 @@ class PathfindingService {
     required GridPoint end,
     required int cellSize,
   }) async {
-    print('🔵 [PATH] Finding path...');
-    print('   From: $start → To: $end');
-    print('   Grid: ${gridModel.width}x${gridModel.height}');
-    print('   Cell size: $cellSize px');
 
     GridPoint resolvedStart = start;
     GridPoint resolvedEnd = end;
@@ -21,40 +17,28 @@ class PathfindingService {
     if (gridModel.grid[start.row][start.col] == 1) {
       final snapped = _findNearestWalkable(gridModel, start);
       if (snapped == null) {
-        print('❌ [PATH] Start is on a wall with no walkable neighbor nearby');
         return null;
       }
-      print('⚠️ [PATH] Start snapped from $start → $snapped');
       resolvedStart = snapped;
     }
 
     if (gridModel.grid[end.row][end.col] == 1) {
       final snapped = _findNearestWalkable(gridModel, end);
       if (snapped == null) {
-        print('❌ [PATH] End is on a wall with no walkable neighbor nearby');
         return null;
       }
-      print('⚠️ [PATH] End snapped from $end → $snapped');
       resolvedEnd = snapped;
     }
 
     final path = _astarOptimized(gridModel, resolvedStart, resolvedEnd);
 
     if (path == null || path.isEmpty) {
-      print('❌ [PATH] No path found');
-      print(
-        '   Start walkable: ${gridModel.grid[resolvedStart.row][resolvedStart.col] == 0}',
-      );
-      print(
-        '   End walkable: ${gridModel.grid[resolvedEnd.row][resolvedEnd.col] == 0}',
-      );
       return null;
     }
 
-    // Smooth the path — uses the FIXED _smoothPath that breaks on first
-    // line-of-sight failure instead of jumping over walls.
+    // Simplify the path by skipping intermediate waypoints that are in
+    // direct line of sight of each other.
     final smoothed = _smoothPath(path, gridModel);
-    print('✅ [PATH] Smoothed: ${path.length} → ${smoothed.length} waypoints');
 
     final metersPerCell = 0.43;
     double totalDistance = 0;
@@ -69,11 +53,6 @@ class PathfindingService {
 
     final distanceMeters = totalDistance * metersPerCell;
     final timeSeconds = (distanceMeters / 1.2).round();
-
-    print('✅ [PATH] Distance: ${distanceMeters.toStringAsFixed(1)}m');
-    print(
-      '✅ [PATH] Time: ${timeSeconds}s (${(timeSeconds / 60).toStringAsFixed(1)}min)',
-    );
 
     final directions = _generateDirections(smoothed);
 
@@ -205,19 +184,10 @@ class PathfindingService {
     return path;
   }
 
-  /// Smooth path using line-of-sight.
-  ///
-  /// BUG FIXED: The previous version did NOT break when line-of-sight failed.
-  /// It kept scanning forward and jumped to a farther waypoint even if walls
-  /// were in between — causing the drawn path to cut diagonally through walls.
-  ///
-  /// Example of the bug:
-  ///   i=0, checking j=2: LOS blocked by wall → old code: ignored, kept scanning
-  ///                       j=3: LOS clear (on other side of wall) → jumped to j=3
-  ///   Result: path drew a straight line from 0 to 3, visually through the wall.
-  ///
-  /// Fix: break as soon as LOS fails. The farthest reachable point is the last
-  /// j where LOS was still clear, not the first j where it becomes clear again.
+  /// Reduces the raw grid path to a smaller set of waypoints by greedily
+  /// skipping ahead to the farthest point that still has a clear
+  /// line-of-sight to the current point, so the route doesn't zig-zag
+  /// along the grid and stays clear of walls.
   List<GridPoint> _smoothPath(List<GridPoint> path, GridModel grid) {
     if (path.length <= 2) return path;
 
@@ -229,9 +199,9 @@ class PathfindingService {
 
       for (int j = i + 2; j < path.length; j++) {
         if (_hasLineOfSight(path[i], path[j], grid)) {
-          farthest = j; // LOS clear — extend the skip
+          farthest = j; // line of sight clear, extend the skip
         } else {
-          break; // FIX: LOS blocked — stop immediately, don't scan further
+          break; // line of sight blocked, stop scanning further ahead
         }
       }
 

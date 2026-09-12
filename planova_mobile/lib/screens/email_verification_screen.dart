@@ -151,7 +151,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen>
       body: SingleChildScrollView(
         child: Column(
           children: [
-            // ── Gradient header ─────────────────────────────────────────────
+            // Gradient header
             Container(
               width: double.infinity,
               decoration: BoxDecoration(
@@ -240,7 +240,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen>
               ),
             ),
 
-            // ── Card body ───────────────────────────────────────────────────
+            // Card body
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 24, 20, 40),
               child: Container(

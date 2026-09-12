@@ -44,12 +44,11 @@ class _FloorManagementScreenState extends State<FloorManagementScreen> {
         _isLoading = false;
       });
     } catch (e) {
-      debugPrint('❌ [FloorManagement] Error: $e');
       setState(() => _isLoading = false);
     }
   }
 
-  // ── Add floor ─────────────────────────────────────────────────────────────
+  // Add floor
 
   Future<void> _showAddFloorSheet() async {
     final nameController = TextEditingController();
@@ -188,7 +187,7 @@ class _FloorManagementScreenState extends State<FloorManagementScreen> {
     }
   }
 
-  // ── Upload floorplan (logic unchanged) ───────────────────────────────────
+  // Upload floorplan (logic unchanged)
 
   Future<void> _uploadFloorplan(String floorName, int floorNumber) async {
     final XFile? image = await _imagePicker.pickImage(
@@ -294,7 +293,7 @@ class _FloorManagementScreenState extends State<FloorManagementScreen> {
     }
   }
 
-  // ── Delete with swipe + confirmation sheet ────────────────────────────────
+  // Delete with swipe + confirmation sheet
 
   Future<void> _confirmDeleteFloor(FloorModel floor) async {
     HapticFeedback.mediumImpact();
@@ -459,7 +458,7 @@ class _FloorManagementScreenState extends State<FloorManagementScreen> {
     }
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────────
+  // Build
 
   @override
   Widget build(BuildContext context) {
@@ -528,7 +527,7 @@ class _FloorManagementScreenState extends State<FloorManagementScreen> {
     );
   }
 
-  // ── Swipeable floor card ──────────────────────────────────────────────────
+  // Swipeable floor card
 
   Widget _buildSwipeableFloorCard(
     FloorModel floor,
@@ -656,7 +655,7 @@ class _FloorManagementScreenState extends State<FloorManagementScreen> {
   }
 }
 
-// ── Floor card widget ─────────────────────────────────────────────────────────
+// Floor card widget
 
 class _FloorCard extends StatelessWidget {
   final FloorModel floor;

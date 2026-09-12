@@ -6,6 +6,8 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:planova_mobile/models/floorplan_model.dart';
 import 'package:planova_mobile/models/grid_model.dart';
 import 'package:planova_mobile/models/route_model.dart';
+import 'package:planova_mobile/models/room_model.dart';
+import 'package:planova_mobile/models/door_model.dart';
 import 'package:planova_mobile/services/pathfinding_service.dart';
 import 'package:planova_mobile/services/indoor_positioning_service.dart';
 import 'package:planova_mobile/services/mock_storage_service.dart';
@@ -15,9 +17,24 @@ import 'package:planova_mobile/theme/app_theme.dart';
 class NavigationScreen extends StatefulWidget {
   final FloorplanModel floorplan;
   final GridPoint? destination;
+  // Off-limits rooms are checked against every point the user selects
+  // (both a pre-set destination and free taps), regardless of which
+  // screen or button got them here — this is the single enforcement
+  // point for "can't navigate to a restricted room," so it can't be
+  // bypassed by a different entry route into this screen.
+  final List<RoomModel> rooms;
+  // Rendered as static, highlighted markers so users can see which
+  // entry points are access-controlled — purely informational here,
+  // navigation itself doesn't currently branch on door state.
+  final List<DoorModel> doors;
 
-  const NavigationScreen({Key? key, required this.floorplan, this.destination})
-    : super(key: key);
+  const NavigationScreen({
+    Key? key,
+    required this.floorplan,
+    this.destination,
+    this.rooms = const [],
+    this.doors = const [],
+  }) : super(key: key);
 
   @override
   State<NavigationScreen> createState() => _NavigationScreenState();
@@ -109,19 +126,150 @@ class _NavigationScreenState extends State<NavigationScreen> {
       final processedData = widget.floorplan.processedData;
       if (processedData == null) throw 'Floorplan not processed yet';
       final gridModel = GridModel.fromJson(processedData);
+      _gridModel = gridModel;
+      _computeOffLimitsCells();
+
+      // A pre-set destination (e.g. tapped from the room list) is
+      // re-validated here rather than trusted — the room's off-limits
+      // status may have changed since it was selected, and this is the
+      // one place that ultimately decides what the app will route to.
+      GridPoint? initialEndPoint = widget.destination;
+      final destinationBlocked =
+          initialEndPoint != null && _isOffLimitsPoint(initialEndPoint);
+      if (destinationBlocked) initialEndPoint = null;
+
       setState(() {
-        _gridModel = gridModel;
         _isLoading = false;
-        if (widget.destination != null) _endPoint = widget.destination;
+        _endPoint = initialEndPoint;
       });
+      if (destinationBlocked) {
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _snack(
+            'That room is off-limits and can\'t be selected as a destination',
+            Colors.red,
+          ),
+        );
+      }
       if (_startPoint != null && _endPoint != null) _calculateRoute();
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _calculateImageBounds(),
       );
     } catch (e) {
-      debugPrint('❌ [NAV] Error: $e');
       setState(() => _isLoading = false);
     }
+  }
+
+  // The full set of grid cells belonging to an off-limits room, keyed as
+  // row * width + col. Computed once the grid and room list are both
+  // available (see _computeOffLimitsCells).
+  Set<int> _offLimitsCellKeys = {};
+  // Bounding boxes of each off-limits room's flooded area, purely for
+  // drawing a visible boundary — see _buildOffLimitsOverlay.
+  List<Rect> _offLimitsBounds = [];
+
+  /// A RoomModel only stores one point (wherever the admin dropped the
+  /// pin) — it has no stored boundary. So "off-limits" can't just mean
+  /// "block a small radius around that point": a real room spans many
+  /// grid cells. Flood-fill outward from the pin across walkable cells to
+  /// find the room's actual extent — but wall data alone isn't a reliable
+  /// boundary, since an open doorway has no wall pixel there at all. So
+  /// this also treats every mapped door as a barrier: a doorway IS the
+  /// room's real edge even where the image shows an opening, and that's
+  /// exactly what a door marker represents. A distance cap is kept as a
+  /// second safety net — if a room has an unmapped doorway (no door
+  /// marker placed there), the flood would otherwise leak through it and
+  /// could shade the whole floor instead of just failing to cover one
+  /// room's far corner, which is a much smaller, more honest failure.
+  void _computeOffLimitsCells() {
+    final grid = _gridModel;
+    if (grid == null) return;
+    final width = grid.width;
+    final height = grid.height;
+
+    final doorCellKeys = <int>{};
+    for (final door in widget.doors) {
+      final r = door.gridPoint.row;
+      final c = door.gridPoint.col;
+      if (r < 0 || r >= height || c < 0 || c >= width) continue;
+      doorCellKeys.add(r * width + c);
+    }
+    bool isBarrier(int row, int col) =>
+        grid.grid[row][col] == 1 || doorCellKeys.contains(row * width + col);
+
+    // Cap in cells-from-seed, not total cell count, so the cap scales
+    // sensibly with room shape (a long thin room vs. a square one)
+    // instead of an arbitrary total that varies wildly with layout.
+    const maxRadiusCells = 40;
+
+    final visited = <int>{};
+    final bounds = <Rect>[];
+
+    for (final room in widget.rooms) {
+      if (!room.isOffLimits) continue;
+      final startRow = room.gridPoint.row;
+      final startCol = room.gridPoint.col;
+      if (startRow < 0 || startRow >= height || startCol < 0 || startCol >= width) {
+        continue;
+      }
+      final startKey = startRow * width + startCol;
+      if (visited.contains(startKey)) continue;
+
+      final queue = <GridPoint>[room.gridPoint];
+      final roomCells = <int>{startKey};
+      int minRow = startRow, maxRow = startRow, minCol = startCol, maxCol = startCol;
+      bool hitCap = false;
+
+      while (queue.isNotEmpty) {
+        final cur = queue.removeLast();
+        for (final d in const [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+          final nr = cur.row + d[0];
+          final nc = cur.col + d[1];
+          if (nr < 0 || nr >= height || nc < 0 || nc >= width) continue;
+          if ((nr - startRow).abs() > maxRadiusCells ||
+              (nc - startCol).abs() > maxRadiusCells) {
+            hitCap = true;
+            continue;
+          }
+          final key = nr * width + nc;
+          if (roomCells.contains(key)) continue;
+          if (isBarrier(nr, nc)) continue;
+          roomCells.add(key);
+          queue.add(GridPoint(row: nr, col: nc));
+          if (nr < minRow) minRow = nr;
+          if (nr > maxRow) maxRow = nr;
+          if (nc < minCol) minCol = nc;
+          if (nc > maxCol) maxCol = nc;
+        }
+      }
+
+      if (hitCap) {
+        debugPrint(
+          'Off-limits room "${room.name}" flood-fill hit its distance cap — '
+          'it likely has a doorway with no door marker placed on it, so '
+          'the blocked area may not cover the whole room. Map a door on '
+          'every opening of this room to fix it precisely.',
+        );
+      }
+
+      visited.addAll(roomCells);
+      bounds.add(
+        Rect.fromLTRB(
+          minCol.toDouble(),
+          minRow.toDouble(),
+          (maxCol + 1).toDouble(),
+          (maxRow + 1).toDouble(),
+        ),
+      );
+    }
+
+    _offLimitsCellKeys = visited;
+    _offLimitsBounds = bounds;
+  }
+
+  bool _isOffLimitsPoint(GridPoint pt) {
+    final grid = _gridModel;
+    if (grid == null) return false;
+    return _offLimitsCellKeys.contains(pt.row * grid.width + pt.col);
   }
 
   void _calculateImageBounds() {
@@ -186,6 +334,10 @@ class _NavigationScreenState extends State<NavigationScreen> {
       return;
     }
     final pt = GridPoint(row: row, col: col);
+    if (_isOffLimitsPoint(pt)) {
+      _snack('This room is off-limits — pick a different point', Colors.red);
+      return;
+    }
     setState(() {
       if (_startPoint == null) {
         _startPoint = pt;
@@ -220,7 +372,6 @@ class _NavigationScreenState extends State<NavigationScreen> {
       if (route == null)
         _snack('No path found between these points', Colors.red);
     } catch (e) {
-      debugPrint('❌ [NAV] Route error: $e');
       setState(() => _isCalculating = false);
     }
   }
@@ -237,7 +388,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
 
   void _startNavigation() {
     if (_route == null || _startPoint == null) return;
-    HapticFeedback.mediumImpact(); // ✅ navigation start haptic
+    HapticFeedback.mediumImpact(); //  navigation start haptic
     setState(() {
       _isNavigating = true;
       _showRecenter = false;
@@ -259,7 +410,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
         });
         if (pos.row == _endPoint?.row && pos.col == _endPoint?.col) {
           _stopNavigation();
-          _snack('🎉 You have arrived!', Colors.green);
+          _snack(' You have arrived!', Colors.green);
         }
       },
     );
@@ -312,6 +463,33 @@ class _NavigationScreenState extends State<NavigationScreen> {
         _imageDisplayOffset!.dy;
   }
 
+  // Same scaling as _getScreenX/_getScreenY but for a raw cell *edge*
+  // (no +0.5 centering) — used to draw the off-limits boundary rectangle
+  // rather than a single centered marker.
+  double _screenXAtCellEdge(double colEdge) {
+    if (_imageDisplaySize == null ||
+        _imageDisplayOffset == null ||
+        _imageOriginalSize == null ||
+        _gridModel == null)
+      return 0;
+    final cell = _gridModel!.cellSize.toDouble();
+    return (colEdge * cell) *
+            (_imageDisplaySize!.width / _imageOriginalSize!.width) +
+        _imageDisplayOffset!.dx;
+  }
+
+  double _screenYAtCellEdge(double rowEdge) {
+    if (_imageDisplaySize == null ||
+        _imageDisplayOffset == null ||
+        _imageOriginalSize == null ||
+        _gridModel == null)
+      return 0;
+    final cell = _gridModel!.cellSize.toDouble();
+    return (rowEdge * cell) *
+            (_imageDisplaySize!.height / _imageOriginalSize!.height) +
+        _imageDisplayOffset!.dy;
+  }
+
   String _formatDistance() {
     if (_route == null) return '0 m';
     final frac = 1 - _currentStepIndex / max(_route!.path.length - 1, 1);
@@ -356,7 +534,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     );
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────────
+  // Build
 
   @override
   Widget build(BuildContext context) {
@@ -402,7 +580,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
           ? Center(child: CircularProgressIndicator(color: c.primary))
           : Stack(
               children: [
-                // ── Full-screen map ──────────────────────────────────────────
+                // Full-screen map
                 Positioned.fill(
                   child: GestureDetector(
                     onTapDown: _isNavigating ? null : _handleTap,
@@ -435,6 +613,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                                     height: _imageDisplaySize!.height,
                                     child: _buildFloorplanImage(),
                                   ),
+                                  ..._buildOverlayMarkers(),
                                 ],
                               ),
                             )
@@ -448,6 +627,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                                         height: _imageDisplaySize!.height,
                                         child: _buildFloorplanImage(),
                                       ),
+                                      ..._buildOverlayMarkers(),
                                     ],
                                   )
                                 : Center(
@@ -459,7 +639,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                   ),
                 ),
 
-                // ── Navigation top banner ────────────────────────────────────
+                // Navigation top banner
                 if (_isNavigating)
                   Positioned(
                     top: MediaQuery.of(context).padding.top + 12,
@@ -468,7 +648,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                     child: _buildTopBanner(c, tt),
                   ),
 
-                // ── Status chips (pre-nav) ───────────────────────────────────
+                // Status chips (pre-nav)
                 if (!_isNavigating)
                   Positioned(
                     top:
@@ -480,7 +660,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                     child: _buildStatusChips(c, tt),
                   ),
 
-                // ── Re-center button ─────────────────────────────────────────
+                // Re-center button
                 if (_isNavigating && _showRecenter)
                   Positioned(
                     left: 16,
@@ -488,7 +668,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                     child: _buildRecenterButton(c, tt),
                   ),
 
-                // ── Bottom HUD ───────────────────────────────────────────────
+                // Bottom HUD
                 Positioned(
                   left: 0,
                   right: 0,
@@ -502,7 +682,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     );
   }
 
-  // ── Top banner ─────────────────────────────────────────────────────────────
+  // Top banner
 
   Widget _buildTopBanner(AppColors c, TextTheme tt) {
     String instruction = _currentPosition == _startPoint
@@ -593,7 +773,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     );
   }
 
-  // ── Re-center button ───────────────────────────────────────────────────────
+  // Re-center button
 
   Widget _buildRecenterButton(AppColors c, TextTheme tt) {
     return GestureDetector(
@@ -624,7 +804,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     );
   }
 
-  // ── Status chips ───────────────────────────────────────────────────────────
+  // Status chips
 
   Widget _buildStatusChips(AppColors c, TextTheme tt) {
     if (_startPoint == null) return const SizedBox.shrink();
@@ -679,7 +859,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     );
   }
 
-  // ── Nav HUD ────────────────────────────────────────────────────────────────
+  // Nav HUD
 
   Widget _buildNavHud(AppColors c, TextTheme tt, bool isDark) {
     return Container(
@@ -800,7 +980,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     );
   }
 
-  // ── Pre-nav panel ──────────────────────────────────────────────────────────
+  // Pre-nav panel
 
   Widget _buildPreNavPanel(AppColors c, TextTheme tt, bool isDark) {
     return Container(
@@ -963,6 +1143,117 @@ class _NavigationScreenState extends State<NavigationScreen> {
         text,
         textAlign: TextAlign.center,
         style: tt.bodyMedium?.copyWith(color: c.onSurfaceSecondary),
+      ),
+    );
+  }
+
+  /// Static, non-interactive markers layered on top of the floorplan image:
+  /// highlighted doors and off-limits rooms. Wrapped in IgnorePointer so
+  /// they never steal the tap that _handleTap needs to set start/end
+  /// points — this is purely visual, the actual blocking happens in
+  /// _isOffLimitsPoint.
+  List<Widget> _buildOverlayMarkers() {
+    if (_imageDisplaySize == null || _imageDisplayOffset == null) return [];
+    return [
+      // Shaded boundary first so pins/doors draw on top of it, not under.
+      ..._offLimitsBounds.map((bound) => _buildOffLimitsBoundary(bound)),
+      ...widget.doors.map((door) => _buildDoorOverlay(door)),
+      ...widget.rooms
+          .where((r) => r.isOffLimits)
+          .map((room) => _buildOffLimitsOverlay(room)),
+    ];
+  }
+
+  /// Shades the room's actual flood-filled extent so it's visibly obvious
+  /// which physical area is blocked — not just the single pin.
+  Widget _buildOffLimitsBoundary(Rect cellBounds) {
+    final left = _screenXAtCellEdge(cellBounds.left);
+    final top = _screenYAtCellEdge(cellBounds.top);
+    final right = _screenXAtCellEdge(cellBounds.right);
+    final bottom = _screenYAtCellEdge(cellBounds.bottom);
+    return Positioned(
+      left: left,
+      top: top,
+      width: right - left,
+      height: bottom - top,
+      child: IgnorePointer(
+        child: Container(
+          decoration: BoxDecoration(
+            color: Colors.red.withValues(alpha: 0.12),
+            border: Border.all(color: Colors.red.withValues(alpha: 0.6), width: 1.5),
+            borderRadius: BorderRadius.circular(4),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDoorOverlay(DoorModel door) {
+    final x = _getScreenX(door.gridPoint.col);
+    final y = _getScreenY(door.gridPoint.row);
+    // Positioned MUST be the direct child added to the Stack — it's a
+    // ParentDataWidget that only works when Stack is its nearest
+    // RenderObjectWidget ancestor. IgnorePointer goes *inside* it, not
+    // around it, or Flutter throws "Incorrect use of ParentDataWidget"
+    // because Positioned would then see IgnorePointer as its parent
+    // instead of Stack.
+    return Positioned(
+      left: x - 15,
+      top: y - 15,
+      child: IgnorePointer(
+        child: Container(
+          width: 30,
+          height: 30,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: const Color(0xFFF59E0B),
+            border: Border.all(color: Colors.white, width: 2),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFFF59E0B).withValues(alpha: 0.5),
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: const Icon(
+            Icons.sensor_door_rounded,
+            color: Colors.white,
+            size: 15,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildOffLimitsOverlay(RoomModel room) {
+    final x = _getScreenX(room.gridPoint.col);
+    final y = _getScreenY(room.gridPoint.row);
+    return Positioned(
+      left: x - 15,
+      top: y - 15,
+      child: IgnorePointer(
+        child: Container(
+          width: 30,
+          height: 30,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.red.shade600,
+            border: Border.all(color: Colors.white, width: 2),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.red.withValues(alpha: 0.5),
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: const Icon(
+            Icons.lock_rounded,
+            color: Colors.white,
+            size: 15,
+          ),
+        ),
       ),
     );
   }

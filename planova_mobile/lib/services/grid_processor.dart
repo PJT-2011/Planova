@@ -14,13 +14,11 @@ class GridProcessor {
     int cellSize = 15,
   }) async {
     final startTime = DateTime.now();
-    print('🔵 [GRID] Starting grid processing pipeline...');
 
     final image = img.decodeImage(imageBytes);
     if (image == null) throw Exception('Failed to decode image');
-    print('✅ [GRID] Image: ${image.width}x${image.height}');
 
-    // ── Stage 1: Extract grayscale + color info ───────────────────────────
+    // Stage 1: Extract grayscale + color info
     final grayscale = img.grayscale(image);
     final grayPixels = _extractPixels(grayscale);
     final avgSat = _computeAvgSaturation(image);
@@ -28,34 +26,29 @@ class GridProcessor {
     final grayMax = grayPixels.reduce(max);
     final grayRange = grayMax - grayMin;
 
-    // ── Stage 2: Classify image type ──────────────────────────────────────
+    // Stage 2: Classify image type
     var imgType = _classifyImage(grayPixels, avgSat, grayRange, cellSize);
-    print(
-      '✅ [GRID] Type: $imgType (sat=${avgSat.toStringAsFixed(1)}, range=$grayRange)',
-    );
 
-    // ── Stage 3: Prepare working pixels ───────────────────────────────────
+    // Stage 3: Prepare working pixels
     List<int> working;
     if (imgType == 'E_compressed') {
       working = _stretchContrast(grayPixels, grayMin, grayMax);
       final newMode = _findMode(working);
       imgType = newMode < 245 ? 'D_gray_floor' : 'A_thin_walls';
-      print('✅ [GRID] After stretch: type=$imgType, mode=$newMode');
     } else if (imgType == 'C_colored') {
       working = _minChannelPixels(image);
     } else {
       working = List<int>.from(grayPixels);
     }
 
-    // ── Stage 4: Inversion check ──────────────────────────────────────────
+    // Stage 4: Inversion check
     final modeVal = _findMode(working);
     if (modeVal <= 128) {
       working = working.map((v) => 255 - v).toList();
-      print('✅ [GRID] Inverted (mode was $modeVal)');
     }
     final finalMode = _findMode(working);
 
-    // ── Stage 5: Threshold per type ───────────────────────────────────────
+    // Stage 5: Threshold per type
     int threshold;
     bool useTier2;
     int dilation;
@@ -98,9 +91,7 @@ class GridProcessor {
         break;
     }
 
-    print('✅ [GRID] thresh=$threshold, tier2=$useTier2, dilation=$dilation');
-
-    // ── Stage 6: Build grid ───────────────────────────────────────────────
+    // Stage 6: Build grid
     final width = (image.width / cellSize).ceil();
     final height = (image.height / cellSize).ceil();
     final grid = List.generate(height, (_) => List.generate(width, (_) => 0));
@@ -137,21 +128,20 @@ class GridProcessor {
     }
 
     final rawWallPct = _wallPercent(grid, width, height);
-    print('🔵 [GRID] Raw walls: ${rawWallPct.toStringAsFixed(1)}%');
 
-    // ── Stage 7: Dilation ─────────────────────────────────────────────────
+    // Stage 7: Dilation
     var processed = dilation > 0 ? _dilateWalls(grid, width, height) : grid;
 
-    // ── Stage 8: Remove isolated wall cells ───────────────────────────────
+    // Stage 8: Remove isolated wall cells
     processed = _removeIsolatedWalls(processed, width, height);
 
-    // ── Stage 9: Border enforcement ───────────────────────────────────────
+    // Stage 9: Border enforcement
     processed = _enforceBorder(processed, width, height);
 
-    // ── Stage 10: Connect isolated walkable regions (V18) ─────────────────
+    // Stage 10: Connect isolated walkable regions (V18)
     processed = _connectIsolatedRegions(processed, width, height);
 
-    // ── Stats ─────────────────────────────────────────────────────────────
+    // Stats
     int wallCells = 0;
     for (final row in processed) {
       for (final cell in row) {
@@ -162,11 +152,6 @@ class GridProcessor {
     final finalPct = wallCells / totalCells * 100;
     final processingTime =
         DateTime.now().difference(startTime).inMilliseconds / 1000;
-
-    print(
-      '✅ [GRID] Final: ${width}x$height, walls=${finalPct.toStringAsFixed(1)}%',
-    );
-    print('✅ [GRID] Time: ${processingTime.toStringAsFixed(2)}s');
 
     return GridModel(
       grid: processed,
@@ -183,9 +168,7 @@ class GridProcessor {
     );
   }
 
-  // ═══════════════════════════════════════════════════════════════════════
   // V18: Connect isolated walkable regions safely
-  // ═══════════════════════════════════════════════════════════════════════
 
   List<List<int>> _connectIsolatedRegions(
     List<List<int>> grid,
@@ -198,11 +181,8 @@ class GridProcessor {
     final regionCount = labelResult['regionCount'] as int;
 
     if (regionCount <= 1) {
-      print('✅ [GRID] All regions connected, no corridors needed');
       return grid;
     }
-
-    print('🔵 [GRID] Found $regionCount disconnected regions — connecting...');
 
     int largestId = 0;
     int largestSize = 0;
@@ -267,7 +247,6 @@ class GridProcessor {
             }
           }
         }
-        print('⚠️  [GRID] Region $id: no clean path, using closest fallback');
       }
 
       final ar = bestA[0], ac = bestA[1];
@@ -282,9 +261,6 @@ class GridProcessor {
         result[br][c] = 0;
       }
 
-      print(
-        '✅ [GRID] Connected region $id (size=${regionSizes[id]}) via ($ar,$ac)→($br,$bc)',
-      );
     }
 
     return result;
@@ -382,9 +358,7 @@ class GridProcessor {
     };
   }
 
-  // ═══════════════════════════════════════════════════════════════════════
   // Existing helpers (unchanged)
-  // ═══════════════════════════════════════════════════════════════════════
 
   List<int> _extractPixels(img.Image grayscale) {
     final pixels = <int>[];

@@ -97,7 +97,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
       body: SingleChildScrollView(
         child: Column(
           children: [
-            // ── Gradient header ───────────────────────────────────────────
+            // Gradient header
             Container(
               width: double.infinity,
               decoration: BoxDecoration(
@@ -188,7 +188,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
               ),
             ),
 
-            // ── Form card ─────────────────────────────────────────────────
+            // Form card
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 24, 20, 40),
               child: Container(
@@ -402,7 +402,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
   }
 }
 
-// ── Password strength bar ─────────────────────────────────────────────────────
+// Password strength bar
 
 class _PasswordStrengthBar extends StatelessWidget {
   final int strength; // 0–4

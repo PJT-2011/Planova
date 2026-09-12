@@ -5,9 +5,16 @@ import 'package:planova_mobile/models/building_model.dart';
 import 'package:planova_mobile/models/floor_model.dart';
 import 'package:planova_mobile/models/room_model.dart';
 import 'package:planova_mobile/models/grid_model.dart';
+import 'package:planova_mobile/models/door_model.dart';
 import 'package:planova_mobile/services/building_service.dart';
 import 'package:planova_mobile/services/mock_storage_service.dart';
 import 'package:planova_mobile/theme/app_theme.dart';
+
+/// Icons an admin can drag onto the floorplan canvas. Kept separate from
+/// [RoomModel] / [DoorModel] because it only describes intent while a drag
+/// is in flight — the drop handler turns it into a real door or an
+/// off-limits toggle on the nearest room.
+enum _PaletteIcon { door, offLimits }
 
 class RoomMappingScreen extends StatefulWidget {
   final BuildingModel building;
@@ -27,6 +34,7 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
     with SingleTickerProviderStateMixin {
   final BuildingService _buildingService = BuildingService();
   final GlobalKey _imageKey = GlobalKey();
+  final GlobalKey _canvasViewportKey = GlobalKey();
   final TransformationController _transformController =
       TransformationController();
 
@@ -36,7 +44,19 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
 
   GridModel? _gridModel;
   List<RoomModel> _rooms = [];
+  List<DoorModel> _doors = [];
   bool _isLoading = true;
+
+  // State while a placed door marker is being dragged to a new spot.
+  // _dragPreviewLocalPosition is in the *content* coordinate space (the
+  // same space _getScreenX/_getScreenY use — i.e. inside the InteractiveViewer's
+  // transformed child), so it can be used directly to position the marker.
+  // _dragLastGlobalPosition is the raw pointer position, kept separately so
+  // the final drop reuses the exact same global->grid conversion as every
+  // other drag-and-drop action instead of re-deriving it from the preview.
+  String? _draggingDoorId;
+  Offset? _dragPreviewLocalPosition;
+  Offset? _dragLastGlobalPosition;
 
   Size? _imageDisplaySize;
   Offset? _imageDisplayOffset;
@@ -55,7 +75,7 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
     super.dispose();
   }
 
-  // ── Data ──────────────────────────────────────────────────────────────────
+  // Data
 
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
@@ -75,8 +95,21 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
         (_) => _calculateImageBounds(),
       );
     } catch (e) {
-      debugPrint('❌ [RoomMapping] Error: $e');
       setState(() => _isLoading = false);
+    }
+
+    // Doors are loaded independently and are not allowed to block the
+    // floorplan/room-mapping experience — e.g. if Firestore rules for the
+    // new `doors` subcollection haven't been deployed yet, this screen
+    // should still show the floorplan and let you map rooms.
+    try {
+      final doors = await _buildingService.getDoors(
+        widget.building.id,
+        widget.floor.id,
+      );
+      if (mounted) setState(() => _doors = doors);
+    } catch (e) {
+      debugPrint('Room mapping: failed to load doors — $e');
     }
   }
 
@@ -110,7 +143,7 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
     });
   }
 
-  // ── Rotation ──────────────────────────────────────────────────────────────
+  // Rotation
 
   void _onInteractionStart(ScaleStartDetails d) {
     if (d.pointerCount >= 2) {
@@ -151,25 +184,26 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
     _transformController.value = Matrix4.identity();
   }
 
-  // ── Tap → add room ────────────────────────────────────────────────────────
+  // Coordinate mapping — shared by tap-to-place and drag-and-drop
 
-  Future<void> _handleTap(TapDownDetails details) async {
-    if (_isMultiTouch) return;
-    if (_gridModel == null || _imageDisplaySize == null) {
-      _snack('Please wait for floorplan to load');
-      return;
-    }
+  /// Converts a point in the canvas viewport's local coordinate space
+  /// (i.e. relative to the [GestureDetector] that wraps [InteractiveViewer])
+  /// into a grid cell, accounting for the current pan/zoom/rotation.
+  /// Returns null when the point falls outside the floorplan image.
+  GridPoint? _viewportPointToGrid(Offset localPosition) {
+    if (_gridModel == null || _imageDisplaySize == null) return null;
+
     final inv = Matrix4.inverted(_transformController.value);
-    final lp = MatrixUtils.transformPoint(inv, details.localPosition);
+    final lp = MatrixUtils.transformPoint(inv, localPosition);
     final ax = lp.dx - _imageDisplayOffset!.dx;
     final ay = lp.dy - _imageDisplayOffset!.dy;
     if (ax < 0 ||
         ax > _imageDisplaySize!.width ||
         ay < 0 ||
         ay > _imageDisplaySize!.height) {
-      _snack('Please tap inside the floorplan');
-      return;
+      return null;
     }
+
     final sx = _imageOriginalSize!.width / _imageDisplaySize!.width;
     final sy = _imageOriginalSize!.height / _imageDisplaySize!.height;
     final cell = _gridModel!.cellSize.toDouble();
@@ -179,14 +213,52 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
         row >= _gridModel!.height ||
         col < 0 ||
         col >= _gridModel!.width) {
+      return null;
+    }
+    return GridPoint(row: row, col: col);
+  }
+
+  /// Same as [_viewportPointToGrid] but starting from a point in screen
+  /// (global) coordinates — used by the drag-and-drop icon palette, whose
+  /// drop callback only gives us a global offset.
+  GridPoint? _globalPointToGrid(Offset globalPosition) {
+    final box =
+        _canvasViewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return null;
+    return _viewportPointToGrid(box.globalToLocal(globalPosition));
+  }
+
+  /// Converts a global (screen) point into the *content* coordinate space
+  /// used to position [Positioned] markers inside the transformed canvas
+  /// (the same space [_getScreenX]/[_getScreenY] return). Used to render a
+  /// live preview while a door marker is being dragged.
+  Offset? _globalPointToContentLocal(Offset globalPosition) {
+    final box =
+        _canvasViewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return null;
+    final viewportLocal = box.globalToLocal(globalPosition);
+    final inv = Matrix4.inverted(_transformController.value);
+    return MatrixUtils.transformPoint(inv, viewportLocal);
+  }
+
+  // Tap to add room
+
+  Future<void> _handleTap(TapDownDetails details) async {
+    if (_isMultiTouch) return;
+    if (_gridModel == null || _imageDisplaySize == null) {
+      _snack('Please wait for floorplan to load');
+      return;
+    }
+    final grid = _viewportPointToGrid(details.localPosition);
+    if (grid == null) {
       _snack('Please tap inside the floorplan area');
       return;
     }
-    if (_gridModel!.grid[row][col] == 1) {
+    if (_gridModel!.grid[grid.row][grid.col] == 1) {
       _snack('Cannot place room on a wall — tap an open area');
       return;
     }
-    await _showAddRoomSheet(row, col);
+    await _showAddRoomSheet(grid.row, grid.col);
   }
 
   void _snack(String msg, {Color? color}) {
@@ -199,7 +271,7 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
     );
   }
 
-  // ── Add room — bottom sheet ───────────────────────────────────────────────
+  // Add room — bottom sheet
 
   Future<void> _showAddRoomSheet(int row, int col) async {
     final nameController = TextEditingController();
@@ -357,7 +429,265 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
     }
   }
 
-  // ── Delete room — bottom sheet ────────────────────────────────────────────
+  // Drag-and-drop: door + off-limits icons
+
+  /// Called when a palette icon is dropped onto the canvas.
+  Future<void> _handleIconDrop(_PaletteIcon icon, Offset globalPosition) async {
+    if (_gridModel == null) {
+      _snack('Please wait for floorplan to load');
+      return;
+    }
+    final grid = _globalPointToGrid(globalPosition);
+    if (grid == null) {
+      _snack('Drop the icon inside the floorplan');
+      return;
+    }
+    switch (icon) {
+      case _PaletteIcon.door:
+        await _placeDoor(grid.row, grid.col);
+        break;
+      case _PaletteIcon.offLimits:
+        await _markNearestRoomOffLimits(grid);
+        break;
+    }
+  }
+
+  Future<void> _placeDoor(int row, int col) async {
+    try {
+      final door = await _buildingService.addDoor(
+        buildingId: widget.building.id,
+        floorId: widget.floor.id,
+        row: row,
+        col: col,
+      );
+      setState(() => _doors = [..._doors, door]);
+      HapticFeedback.mediumImpact();
+      _snack(
+        'Door placed — this entry point is now access-controlled',
+        color: AppTheme.colors(context).success,
+      );
+    } catch (e) {
+      _snack('Error placing door: $e', color: AppTheme.colors(context).error);
+    }
+  }
+
+  /// Off-limits is a flag on an existing [RoomModel], not a standalone
+  /// marker — so dropping the icon finds whichever mapped room is closest
+  /// to the drop point (within a generous hit radius) and toggles it.
+  Future<void> _markNearestRoomOffLimits(GridPoint grid) async {
+    if (_rooms.isEmpty) {
+      _snack('Map a room first, then mark it Off-Limits');
+      return;
+    }
+
+    RoomModel? nearest;
+    double bestDistance = double.infinity;
+    for (final room in _rooms) {
+      final dr = (room.gridPoint.row - grid.row).toDouble();
+      final dc = (room.gridPoint.col - grid.col).toDouble();
+      final distance = math.sqrt(dr * dr + dc * dc);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        nearest = room;
+      }
+    }
+
+    const maxHitDistanceInCells = 6.0;
+    if (nearest == null || bestDistance > maxHitDistanceInCells) {
+      _snack('Drop the icon directly on a room to mark it Off-Limits');
+      return;
+    }
+
+    await _setRoomOffLimits(nearest, !nearest.isOffLimits);
+  }
+
+  Future<void> _setRoomOffLimits(
+    RoomModel room,
+    bool offLimits, {
+    String? note,
+  }) async {
+    try {
+      await _buildingService.updateRoom(
+        widget.building.id,
+        widget.floor.id,
+        room.id,
+        {'isOffLimits': offLimits, 'offLimitsNote': note},
+      );
+      HapticFeedback.mediumImpact();
+      final c = AppTheme.colors(context);
+      _snack(
+        offLimits
+            ? '"${room.name}" marked Off-Limits'
+            : '"${room.name}" is accessible again',
+        color: offLimits ? c.warning : c.success,
+      );
+      _loadData();
+    } catch (e) {
+      _snack(
+        'Error updating room: $e',
+        color: AppTheme.colors(context).error,
+      );
+    }
+  }
+
+  Future<void> _repositionDoor(DoorModel door, Offset globalPosition) async {
+    final grid = _globalPointToGrid(globalPosition);
+    setState(() {
+      _draggingDoorId = null;
+      _dragPreviewLocalPosition = null;
+      _dragLastGlobalPosition = null;
+    });
+    if (grid == null) return;
+
+    try {
+      await _buildingService.updateDoor(
+        widget.building.id,
+        widget.floor.id,
+        door.id,
+        {
+          'gridPoint': {'row': grid.row, 'col': grid.col},
+        },
+      );
+      setState(() {
+        _doors = _doors
+            .map((d) => d.id == door.id ? d.copyWith(gridPoint: grid) : d)
+            .toList();
+      });
+    } catch (e) {
+      _snack('Error moving door: $e', color: AppTheme.colors(context).error);
+    }
+  }
+
+  Future<void> _removeDoor(DoorModel door) async {
+    try {
+      await _buildingService.deleteDoor(
+        widget.building.id,
+        widget.floor.id,
+        door.id,
+      );
+      setState(() => _doors = _doors.where((d) => d.id != door.id).toList());
+      HapticFeedback.mediumImpact();
+      _snack('Door removed', color: AppTheme.colors(context).success);
+    } catch (e) {
+      _snack('Error removing door: $e', color: AppTheme.colors(context).error);
+    }
+  }
+
+  void _showDoorOptions(DoorModel door) {
+    final c = AppTheme.colors(context);
+    final tt = Theme.of(context).textTheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    HapticFeedback.selectionClick();
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF1C2942) : Colors.white,
+          borderRadius: BorderRadius.circular(AppRadius.xl),
+          border: isDark
+              ? Border.all(color: Colors.white.withValues(alpha: 0.10))
+              : null,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.20),
+              blurRadius: 24,
+              offset: const Offset(0, -4),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 40,
+                margin: const EdgeInsets.only(bottom: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF59E0B).withValues(alpha: 0.14),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.sensor_door_rounded,
+                  color: Color(0xFFF59E0B),
+                  size: 22,
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              door.label,
+              style: tt.headlineSmall?.copyWith(
+                color: c.onSurface,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Access-controlled entry point · Drag to move',
+              style: tt.bodySmall?.copyWith(color: c.onSurfaceSecondary),
+            ),
+            const SizedBox(height: 22),
+            GestureDetector(
+              onTap: () {
+                Navigator.pop(context);
+                _removeDoor(door);
+              },
+              child: Container(
+                height: 54,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: c.error.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                  border: Border.all(color: c.error.withValues(alpha: 0.35)),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.delete_outline_rounded,
+                      color: c.error,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      'Remove Door',
+                      style: tt.labelLarge?.copyWith(color: c.error),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            GestureDetector(
+              onTap: () => Navigator.pop(context),
+              child: Container(
+                height: 50,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                  border: Border.all(color: c.border, width: 1.5),
+                ),
+                child: Center(
+                  child: Text(
+                    'Close',
+                    style: tt.labelLarge?.copyWith(color: c.onSurfaceSecondary),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Delete room — bottom sheet
 
   Future<void> _deleteRoom(RoomModel room) async {
     final c = AppTheme.colors(context);
@@ -515,7 +845,7 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
     }
   }
 
-  // ── Room options sheet ────────────────────────────────────────────────────
+  // Room options sheet
 
   void _showRoomOptions(RoomModel room) {
     final c = AppTheme.colors(context);
@@ -602,6 +932,48 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
             ),
             const SizedBox(height: 28),
 
+            // Off-Limits toggle
+            GestureDetector(
+              onTap: () {
+                Navigator.pop(context);
+                _setRoomOffLimits(room, !room.isOffLimits);
+              },
+              child: Container(
+                height: 54,
+                width: double.infinity,
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: room.isOffLimits
+                      ? c.success.withValues(alpha: 0.10)
+                      : c.warning.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                  border: Border.all(
+                    color: (room.isOffLimits ? c.success : c.warning)
+                        .withValues(alpha: 0.35),
+                  ),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      room.isOffLimits
+                          ? Icons.lock_open_rounded
+                          : Icons.block_rounded,
+                      color: room.isOffLimits ? c.success : c.warning,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      room.isOffLimits ? 'Remove Off-Limits' : 'Mark Off-Limits',
+                      style: tt.labelLarge?.copyWith(
+                        color: room.isOffLimits ? c.success : c.warning,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
             // Delete button
             GestureDetector(
               onTap: () {
@@ -659,7 +1031,7 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
     );
   }
 
-  // ── Coordinate helpers ────────────────────────────────────────────────────
+  // Coordinate helpers
 
   double _getScreenX(int col) {
     if (_imageDisplaySize == null || _gridModel == null) return 0;
@@ -679,7 +1051,7 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
         _imageDisplayOffset!.dy;
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────────
+  // Build
 
   @override
   Widget build(BuildContext context) {
@@ -740,54 +1112,78 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
           ? Center(child: CircularProgressIndicator(color: c.primary))
           : Column(
               children: [
-                // ── Hint banner ──────────────────────────────────────────────
+                // Hint banner
                 _HintBanner(c: c),
 
-                // ── Canvas ───────────────────────────────────────────────────
+                // Canvas
                 Expanded(
                   child: Stack(
                     children: [
                       LayoutBuilder(
                         builder: (_, constraints) {
-                          return GestureDetector(
-                            onTapDown: _handleTap,
-                            child: InteractiveViewer(
-                              transformationController: _transformController,
-                              minScale: 0.5,
-                              maxScale: 5.0,
-                              boundaryMargin: const EdgeInsets.all(80),
-                              onInteractionStart: _onInteractionStart,
-                              onInteractionUpdate: _onInteractionUpdate,
-                              onInteractionEnd: _onInteractionEnd,
-                              child: Container(
-                                key: _imageKey,
-                                width: constraints.maxWidth,
-                                height: constraints.maxHeight,
-                                // floorPlanBackground: white in light, dark blue in dark
-                                color: isDark
-                                    ? const Color(0xFF111D30)
-                                    : c.floorPlanBackground,
-                                child: Stack(
-                                  children: [
-                                    // Floorplan image
-                                    if (_imageDisplaySize != null &&
-                                        _imageDisplayOffset != null)
-                                      Positioned(
-                                        left: _imageDisplayOffset!.dx,
-                                        top: _imageDisplayOffset!.dy,
-                                        width: _imageDisplaySize!.width,
-                                        height: _imageDisplaySize!.height,
-                                        child: _buildFloorplanImage(),
-                                      ),
-                                    // Room pin markers
-                                    if (_gridModel != null)
-                                      ..._rooms.map(
-                                        (r) => _buildMarker(r, c, tt),
-                                      ),
-                                  ],
+                          return DragTarget<_PaletteIcon>(
+                            onWillAcceptWithDetails: (_) => true,
+                            onAcceptWithDetails: (details) =>
+                                _handleIconDrop(details.data, details.offset),
+                            builder: (context, candidateData, __) {
+                              final isDropTarget = candidateData.isNotEmpty;
+                              return GestureDetector(
+                                key: _canvasViewportKey,
+                                onTapDown: _handleTap,
+                                child: InteractiveViewer(
+                                  transformationController:
+                                      _transformController,
+                                  minScale: 0.5,
+                                  maxScale: 5.0,
+                                  boundaryMargin: const EdgeInsets.all(80),
+                                  onInteractionStart: _onInteractionStart,
+                                  onInteractionUpdate: _onInteractionUpdate,
+                                  onInteractionEnd: _onInteractionEnd,
+                                  child: Container(
+                                    key: _imageKey,
+                                    width: constraints.maxWidth,
+                                    height: constraints.maxHeight,
+                                    // floorPlanBackground: white in light, dark blue in dark
+                                    color: isDark
+                                        ? const Color(0xFF111D30)
+                                        : c.floorPlanBackground,
+                                    foregroundDecoration: isDropTarget
+                                        ? BoxDecoration(
+                                            border: Border.all(
+                                              color: c.primary,
+                                              width: 3,
+                                            ),
+                                          )
+                                        : null,
+                                    child: Stack(
+                                      children: [
+                                        // Floorplan image
+                                        if (_imageDisplaySize != null &&
+                                            _imageDisplayOffset != null)
+                                          Positioned(
+                                            left: _imageDisplayOffset!.dx,
+                                            top: _imageDisplayOffset!.dy,
+                                            width: _imageDisplaySize!.width,
+                                            height: _imageDisplaySize!.height,
+                                            child: _buildFloorplanImage(),
+                                          ),
+                                        // Door markers (drawn beneath room
+                                        // pins so pins stay easiest to tap)
+                                        if (_gridModel != null)
+                                          ..._doors.map(
+                                            (d) => _buildDoorMarker(d, c, tt),
+                                          ),
+                                        // Room pin markers
+                                        if (_gridModel != null)
+                                          ..._rooms.map(
+                                            (r) => _buildMarker(r, c, tt),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
                                 ),
-                              ),
-                            ),
+                              );
+                            },
                           );
                         },
                       ),
@@ -810,6 +1206,13 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
                         right: 12,
                         child: _CountBadge(count: _rooms.length, c: c, tt: tt),
                       ),
+
+                      // Drag-and-drop icon palette (bottom-right)
+                      Positioned(
+                        bottom: 16,
+                        right: 16,
+                        child: _IconPalette(c: c, tt: tt, isDark: isDark),
+                      ),
                     ],
                   ),
                 ),
@@ -818,7 +1221,7 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
     );
   }
 
-  // ── Help sheet ────────────────────────────────────────────────────────────
+  // Help sheet
 
   void _showHelpSheet(AppColors c, TextTheme tt, bool isDark) {
     showModalBottomSheet(
@@ -869,6 +1272,14 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
               (Icons.rotate_right_rounded, 'Twist with two fingers to rotate'),
               (Icons.touch_app_rounded, 'Tap anywhere to place a room'),
               (Icons.location_on_rounded, 'Tap a pin marker to view or delete'),
+              (
+                Icons.sensor_door_rounded,
+                'Drag the Door icon onto a doorway to mark it access-controlled',
+              ),
+              (
+                Icons.block_rounded,
+                'Drag the Off-Limits icon onto a room to restrict it',
+              ),
               (Icons.fit_screen_rounded, 'Use ⊡ button to reset the view'),
             ].map(
               (e) => Padding(
@@ -919,7 +1330,7 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
     );
   }
 
-  // ── Floorplan image ───────────────────────────────────────────────────────
+  // Floorplan image
 
   Widget _buildFloorplanImage() {
     final url = widget.floor.imageUrl;
@@ -951,11 +1362,12 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
     );
   }
 
-  // ── Room pin marker ───────────────────────────────────────────────────────
+  // Room pin marker
 
   Widget _buildMarker(RoomModel room, AppColors c, TextTheme tt) {
     final x = _getScreenX(room.gridPoint.col);
     final y = _getScreenY(room.gridPoint.row);
+    final pinColor = room.isOffLimits ? c.error : c.primary;
 
     return Positioned(
       left: x - 24,
@@ -969,24 +1381,37 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
-                color: c.pinLabel,
+                color: room.isOffLimits ? c.error : c.pinLabel,
                 borderRadius: BorderRadius.circular(AppRadius.full),
                 boxShadow: [
                   BoxShadow(
-                    color: c.primary.withValues(alpha: 0.40),
+                    color: pinColor.withValues(alpha: 0.40),
                     blurRadius: 8,
                     offset: const Offset(0, 3),
                   ),
                 ],
               ),
-              child: Text(
-                room.name,
-                style: TextStyle(
-                  color: c.pinLabelText,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.2,
-                ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (room.isOffLimits) ...[
+                    const Icon(
+                      Icons.lock_rounded,
+                      color: Colors.white,
+                      size: 10,
+                    ),
+                    const SizedBox(width: 4),
+                  ],
+                  Text(
+                    room.name,
+                    style: TextStyle(
+                      color: room.isOffLimits ? Colors.white : c.pinLabelText,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 2),
@@ -1004,7 +1429,13 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
                     borderRadius: BorderRadius.circular(8),
                   ),
                 ),
-                Icon(Icons.location_on_rounded, color: c.primary, size: 34),
+                Icon(
+                  room.isOffLimits
+                      ? Icons.do_not_disturb_on_rounded
+                      : Icons.location_on_rounded,
+                  color: pinColor,
+                  size: 34,
+                ),
               ],
             ),
           ],
@@ -1012,9 +1443,78 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
       ),
     );
   }
+
+  // Door marker — highlighted, drag-to-reposition, tap for options
+
+  Widget _buildDoorMarker(DoorModel door, AppColors c, TextTheme tt) {
+    final isDragging = _draggingDoorId == door.id;
+    final x = isDragging
+        ? _dragPreviewLocalPosition!.dx
+        : _getScreenX(door.gridPoint.col);
+    final y = isDragging
+        ? _dragPreviewLocalPosition!.dy
+        : _getScreenY(door.gridPoint.row);
+
+    return Positioned(
+      left: x - 18,
+      top: y - 18,
+      child: GestureDetector(
+        onTap: () => _showDoorOptions(door),
+        onPanStart: (_) => setState(() {
+          _draggingDoorId = door.id;
+          _dragPreviewLocalPosition = Offset(
+            _getScreenX(door.gridPoint.col),
+            _getScreenY(door.gridPoint.row),
+          );
+        }),
+        onPanUpdate: (details) {
+          final contentLocal = _globalPointToContentLocal(
+            details.globalPosition,
+          );
+          if (contentLocal == null) return;
+          setState(() {
+            _dragLastGlobalPosition = details.globalPosition;
+            _dragPreviewLocalPosition = contentLocal;
+          });
+        },
+        onPanEnd: (_) {
+          final global = _dragLastGlobalPosition;
+          if (global == null) {
+            setState(() {
+              _draggingDoorId = null;
+              _dragPreviewLocalPosition = null;
+            });
+            return;
+          }
+          _repositionDoor(door, global);
+        },
+        child: Container(
+          width: 36,
+          height: 36,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: const Color(0xFFF59E0B),
+            border: Border.all(color: Colors.white, width: 2.5),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFFF59E0B).withValues(alpha: 0.45),
+                blurRadius: 10,
+                offset: const Offset(0, 3),
+              ),
+            ],
+          ),
+          child: const Icon(
+            Icons.sensor_door_rounded,
+            color: Colors.white,
+            size: 18,
+          ),
+        ),
+      ),
+    );
+  }
 }
 
-// ── AppBar icon button ────────────────────────────────────────────────────────
+// AppBar icon button
 
 class _IconBtn extends StatelessWidget {
   final IconData icon;
@@ -1036,7 +1536,7 @@ class _IconBtn extends StatelessWidget {
   );
 }
 
-// ── Hint banner ───────────────────────────────────────────────────────────────
+// Hint banner
 
 class _HintBanner extends StatelessWidget {
   final AppColors c;
@@ -1062,12 +1562,13 @@ class _HintBanner extends StatelessWidget {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              'Tap to place a room · Pinch to zoom · Drag to pan',
+              'Tap to place a room · Drag icons from the palette to add doors or restrict rooms',
               style: TextStyle(
                 color: c.primary,
                 fontSize: 12,
                 fontWeight: FontWeight.w500,
               ),
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],
@@ -1076,7 +1577,7 @@ class _HintBanner extends StatelessWidget {
   }
 }
 
-// ── Count badge (top-right) ───────────────────────────────────────────────────
+// Count badge (top-right)
 
 class _CountBadge extends StatelessWidget {
   final int count;
@@ -1113,7 +1614,7 @@ class _CountBadge extends StatelessWidget {
   }
 }
 
-// ── Dropdown room chips panel ─────────────────────────────────────────────────
+// Dropdown room chips panel
 
 class _RoomChipsDropdown extends StatefulWidget {
   final List<RoomModel> rooms;
@@ -1286,6 +1787,141 @@ class _RoomChipsDropdownState extends State<_RoomChipsDropdown>
           ],
         ),
       ),
+    );
+  }
+}
+
+// Floating drag-and-drop icon palette — an admin drags a Door icon onto a
+// door in the floorplan, or an Off-Limits icon onto a mapped room, to
+// configure access control without leaving the map.
+
+class _IconPalette extends StatelessWidget {
+  final AppColors c;
+  final TextTheme tt;
+  final bool isDark;
+
+  const _IconPalette({required this.c, required this.tt, required this.isDark});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xEE1C2942) : const Color(0xF5FFFFFF),
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(color: c.border),
+        boxShadow: AppShadows.card,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'DRAG ONTO MAP',
+            style: tt.labelSmall?.copyWith(
+              color: c.onSurfaceTertiary,
+              fontSize: 9,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.6,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _PaletteButton(
+                icon: Icons.sensor_door_rounded,
+                label: 'Door',
+                color: const Color(0xFFF59E0B),
+                data: _PaletteIcon.door,
+                c: c,
+                tt: tt,
+              ),
+              const SizedBox(width: 10),
+              _PaletteButton(
+                icon: Icons.block_rounded,
+                label: 'Off-Limits',
+                color: c.error,
+                data: _PaletteIcon.offLimits,
+                c: c,
+                tt: tt,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PaletteButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final _PaletteIcon data;
+  final AppColors c;
+  final TextTheme tt;
+
+  const _PaletteButton({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.data,
+    required this.c,
+    required this.tt,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final chip = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.14),
+            borderRadius: BorderRadius.circular(AppRadius.sm),
+            border: Border.all(color: color.withValues(alpha: 0.35)),
+          ),
+          child: Icon(icon, color: color, size: 22),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: tt.labelSmall?.copyWith(
+            color: c.onSurfaceSecondary,
+            fontSize: 9,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+
+    return Draggable<_PaletteIcon>(
+      data: data,
+      dragAnchorStrategy: pointerDragAnchorStrategy,
+      feedback: Material(
+        color: Colors.transparent,
+        child: Container(
+          width: 48,
+          height: 48,
+          decoration: BoxDecoration(
+            color: color,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white, width: 2.5),
+            boxShadow: [
+              BoxShadow(
+                color: color.withValues(alpha: 0.5),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Icon(icon, color: Colors.white, size: 24),
+        ),
+      ),
+      childWhenDragging: Opacity(opacity: 0.35, child: chip),
+      child: chip,
     );
   }
 }

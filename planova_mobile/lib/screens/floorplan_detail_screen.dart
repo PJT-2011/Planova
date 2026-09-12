@@ -31,7 +31,7 @@ class _FloorplanDetailScreenState extends State<FloorplanDetailScreen> {
     _transformController.value = Matrix4.identity();
   }
 
-  // ── Delete with confirmation sheet ────────────────────────────────────────
+  // Delete with confirmation sheet
 
   Future<void> _deleteFloorplan() async {
     final c = AppTheme.colors(context);
@@ -300,7 +300,7 @@ class _FloorplanDetailScreenState extends State<FloorplanDetailScreen> {
       ),
       body: Column(
         children: [
-          // ── Floorplan image viewer ──────────────────────────────────────
+          // Floorplan image viewer
           Expanded(
             child: Container(
               color: isDark ? const Color(0xFF111D30) : const Color(0xFFE8EDF5),
@@ -313,7 +313,7 @@ class _FloorplanDetailScreenState extends State<FloorplanDetailScreen> {
             ),
           ),
 
-          // ── Detail panel ────────────────────────────────────────────────
+          // Detail panel
           Container(
             padding: EdgeInsets.only(
               left: 20,
@@ -455,7 +455,7 @@ class _FloorplanDetailScreenState extends State<FloorplanDetailScreen> {
   String _formatDate(DateTime date) => '${date.day}/${date.month}/${date.year}';
 }
 
-// ── Status chip ───────────────────────────────────────────────────────────────
+// Status chip
 
 class _StatusChip extends StatelessWidget {
   final String status;
@@ -516,7 +516,7 @@ class _StatusChip extends StatelessWidget {
   }
 }
 
-// ── Meta chip ─────────────────────────────────────────────────────────────────
+// Meta chip
 
 class _MetaChip extends StatelessWidget {
   final IconData icon;

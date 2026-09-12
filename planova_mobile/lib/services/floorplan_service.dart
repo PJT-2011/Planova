@@ -11,77 +11,48 @@ class FloorplanService {
 
   String? get _userId => _auth.currentUser?.uid;
 
-  // ── Upload floorplan ─────────────────────────────────────────────────────────
+  // Upload floorplan
   Future<FloorplanModel> uploadFloorplan({
     required File imageFile,
     required String buildingName,
     required int floorNumber,
   }) async {
-    print('🔵 [UPLOAD] Starting upload...');
-
     final userId = _userId;
-    print('🔵 [UPLOAD] userId: $userId');
     if (userId == null) throw Exception('Not authenticated');
 
     final floorplanId = _firestore.collection('tmp').doc().id;
     final ext = imageFile.path.split('.').last.toLowerCase();
     final storagePath = 'floorplans/$userId/$floorplanId.$ext';
 
-    print('🔵 [UPLOAD] File path: ${imageFile.path}');
-    print('🔵 [UPLOAD] File exists: ${imageFile.existsSync()}');
-    print('🔵 [UPLOAD] File size: ${imageFile.lengthSync()} bytes');
-    print('🔵 [UPLOAD] Storage path: $storagePath');
+    final storageRef = _storage.ref(storagePath);
+    final uploadTask = storageRef.putFile(imageFile);
+    await uploadTask;
 
-    try {
-      print('🔵 [UPLOAD] Starting putFile...');
-      final storageRef = _storage.ref(storagePath);
-      final uploadTask = storageRef.putFile(imageFile);
+    final imageUrl = await storageRef.getDownloadURL();
 
-      // Log upload progress
-      uploadTask.snapshotEvents.listen((TaskSnapshot snapshot) {
-        final progress = (snapshot.bytesTransferred / snapshot.totalBytes * 100)
-            .toStringAsFixed(1);
-        print(
-          '🔵 [UPLOAD] Progress: $progress% (${snapshot.bytesTransferred}/${snapshot.totalBytes})',
-        );
-      });
+    final floorplan = FloorplanModel(
+      floorplanId: floorplanId,
+      userId: userId,
+      buildingName: buildingName,
+      floorNumber: floorNumber,
+      imageUrl: imageUrl,
+      imagePath: storagePath,
+      status: 'uploaded',
+      uploadedAt: DateTime.now(),
+      processedData: null,
+    );
 
-      await uploadTask;
-      print('✅ [UPLOAD] putFile complete');
+    await _firestore
+        .collection('users')
+        .doc(userId)
+        .collection('floorplans')
+        .doc(floorplanId)
+        .set(floorplan.toJson());
 
-      final imageUrl = await storageRef.getDownloadURL();
-      print('✅ [UPLOAD] Download URL: $imageUrl');
-
-      final floorplan = FloorplanModel(
-        floorplanId: floorplanId,
-        userId: userId,
-        buildingName: buildingName,
-        floorNumber: floorNumber,
-        imageUrl: imageUrl,
-        imagePath: storagePath,
-        status: 'uploaded',
-        uploadedAt: DateTime.now(),
-        processedData: null,
-      );
-
-      print('🔵 [UPLOAD] Writing to Firestore...');
-      await _firestore
-          .collection('users')
-          .doc(userId)
-          .collection('floorplans')
-          .doc(floorplanId)
-          .set(floorplan.toJson());
-      print('✅ [UPLOAD] Firestore write complete');
-
-      return floorplan;
-    } catch (e, stack) {
-      print('❌ [UPLOAD] Error: $e');
-      print('❌ [UPLOAD] Stack: $stack');
-      rethrow;
-    }
+    return floorplan;
   }
 
-  // ── Listen to processing status ──────────────────────────────────────────────
+  // Listen to processing status
   Stream<FloorplanModel?> watchFloorplan(String floorplanId) {
     final userId = _userId;
     if (userId == null) return const Stream.empty();
@@ -98,7 +69,7 @@ class FloorplanService {
         });
   }
 
-  // ── Get all floorplans for current user ──────────────────────────────────────
+  // Get all floorplans for current user
   Stream<List<FloorplanModel>> getUserFloorplans() {
     final userId = _userId;
     if (userId == null) return const Stream.empty();
@@ -116,7 +87,7 @@ class FloorplanService {
         );
   }
 
-  // ── Delete floorplan ─────────────────────────────────────────────────────────
+  // Delete floorplan
   Future<void> deleteFloorplan(String floorplanId, String imageUrl) async {
     final userId = _userId;
     if (userId == null) throw Exception('Not authenticated');

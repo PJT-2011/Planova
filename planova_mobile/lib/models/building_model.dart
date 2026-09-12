@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:planova_mobile/models/floor_access_model.dart';
 
 class BuildingModel {
   final String id;
@@ -11,6 +12,12 @@ class BuildingModel {
   final int totalFloors;
   final int totalRooms;
 
+  // Which floors scanning this building's QR code grants access to.
+  // Defaults to "all" so buildings created before this feature keep
+  // behaving exactly as before until an admin explicitly restricts them.
+  final FloorAccessType qrFloorAccessType;
+  final List<int> qrFloorNumbers; // used when qrFloorAccessType == selected
+
   BuildingModel({
     required this.id,
     required this.buildingName,
@@ -21,6 +28,8 @@ class BuildingModel {
     required this.createdAt,
     this.totalFloors = 0,
     this.totalRooms = 0,
+    this.qrFloorAccessType = FloorAccessType.all,
+    this.qrFloorNumbers = const [],
   });
 
   // Convert to JSON for Firestore
@@ -34,6 +43,8 @@ class BuildingModel {
       'createdAt': Timestamp.fromDate(createdAt),
       'totalFloors': totalFloors,
       'totalRooms': totalRooms,
+      'qrFloorAccessType': qrFloorAccessType.name,
+      'qrFloorNumbers': qrFloorNumbers,
     };
   }
 
@@ -49,6 +60,10 @@ class BuildingModel {
       createdAt: (json['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       totalFloors: json['totalFloors'] ?? 0,
       totalRooms: json['totalRooms'] ?? 0,
+      qrFloorAccessType: json['qrFloorAccessType'] == 'selected'
+          ? FloorAccessType.selected
+          : FloorAccessType.all,
+      qrFloorNumbers: List<int>.from(json['qrFloorNumbers'] ?? const []),
     );
   }
 
@@ -63,6 +78,8 @@ class BuildingModel {
     DateTime? createdAt,
     int? totalFloors,
     int? totalRooms,
+    FloorAccessType? qrFloorAccessType,
+    List<int>? qrFloorNumbers,
   }) {
     return BuildingModel(
       id: id ?? this.id,
@@ -74,6 +91,8 @@ class BuildingModel {
       createdAt: createdAt ?? this.createdAt,
       totalFloors: totalFloors ?? this.totalFloors,
       totalRooms: totalRooms ?? this.totalRooms,
+      qrFloorAccessType: qrFloorAccessType ?? this.qrFloorAccessType,
+      qrFloorNumbers: qrFloorNumbers ?? this.qrFloorNumbers,
     );
   }
 }

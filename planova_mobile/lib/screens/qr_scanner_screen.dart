@@ -30,7 +30,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
     super.dispose();
   }
 
-  // ── QR logic ──────────────────────────────────────────────────────────────
+  // QR logic
 
   Future<void> _processQRCode(String? qrCode) async {
     if (qrCode == null || qrCode.isEmpty) return;
@@ -51,17 +51,16 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
       }
       await _buildingService.grantAccess(building.id, widget.userId);
       await _recentService.saveRecentBuilding(widget.userId, building);
-      HapticFeedback.heavyImpact(); // ✅ success haptic
+      HapticFeedback.heavyImpact(); // success haptic
       _showSuccessSheet(building);
     } catch (e) {
-      debugPrint('❌ [QRScanner] Error: $e');
       _showErrorSheet('Error', 'Failed to access building. Please try again.');
     } finally {
       if (mounted) setState(() => _isProcessing = false);
     }
   }
 
-  // ── Success bottom sheet ───────────────────────────────────────────────────
+  // Success bottom sheet
 
   void _showSuccessSheet(BuildingModel building) {
     final c = AppTheme.colors(context);
@@ -248,7 +247,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
     );
   }
 
-  // ── Error bottom sheet ────────────────────────────────────────────────────
+  // Error bottom sheet
 
   void _showErrorSheet(String title, String message) {
     final c = AppTheme.colors(context);
@@ -366,7 +365,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
     );
   }
 
-  // ── Manual entry ──────────────────────────────────────────────────────────
+  // Manual entry
 
   void _showManualEntryDialog() {
     final codeController = TextEditingController();
@@ -479,7 +478,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
     );
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────────
+  // Build
 
   @override
   Widget build(BuildContext context) {
@@ -517,7 +516,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
       ),
       body: Stack(
         children: [
-          // ── Live camera feed ─────────────────────────────────────────────
+          // Live camera feed
           MobileScanner(
             controller: _controller,
             onDetect: (capture) {
@@ -526,7 +525,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
             },
           ),
 
-          // ── Dark vignette top ─────────────────────────────────────────────
+          // Dark vignette top
           Positioned(
             top: 0,
             left: 0,
@@ -546,7 +545,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
             ),
           ),
 
-          // ── Dark vignette bottom ──────────────────────────────────────────
+          // Dark vignette bottom
           Positioned(
             bottom: 0,
             left: 0,
@@ -566,7 +565,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
             ),
           ),
 
-          // ── Instruction text below app bar ────────────────────────────────
+          // Instruction text below app bar
           Positioned(
             top: kToolbarHeight + MediaQuery.of(context).padding.top + 12,
             left: 0,
@@ -598,7 +597,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
             ),
           ),
 
-          // ── Scan frame ────────────────────────────────────────────────────
+          // Scan frame
           Center(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -624,7 +623,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
             ),
           ),
 
-          // ── Processing overlay ────────────────────────────────────────────
+          // Processing overlay
           if (_isProcessing)
             Container(
               color: Colors.black.withValues(alpha: 0.75),
@@ -663,7 +662,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
               ),
             ),
 
-          // ── Enter Code Manually button (bottom) ───────────────────────────
+          // Enter Code Manually button (bottom)
           Positioned(
             bottom: MediaQuery.of(context).padding.bottom + 24,
             left: 24,
@@ -707,7 +706,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
     );
   }
 
-  // ── Animated corner markers for scan frame ────────────────────────────────
+  // Animated corner markers for scan frame
 
   List<Widget> _buildCorners(Color color) {
     const s = 28.0; // corner arm length
@@ -739,7 +738,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
   }
 }
 
-// ── Stat column ───────────────────────────────────────────────────────────────
+// Stat column
 
 class _StatCol extends StatelessWidget {
   final IconData icon;
@@ -774,7 +773,7 @@ class _StatCol extends StatelessWidget {
   }
 }
 
-// ── Corner marker painter ─────────────────────────────────────────────────────
+// Corner marker painter
 
 class _CornerPainter extends CustomPainter {
   final Color color;

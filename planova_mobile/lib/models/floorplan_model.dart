@@ -33,13 +33,13 @@ class FloorplanModel {
     this.errorMessage,
   });
 
-  // ── fromFirestore — for DocumentSnapshot (keeps doc.id as floorplanId) ──────
+  // fromFirestore — for DocumentSnapshot (keeps doc.id as floorplanId)
   factory FloorplanModel.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>;
     return FloorplanModel.fromJson(data, docId: doc.id);
   }
 
-  // ── fromJson — single source of truth ────────────────────────────────────────
+  // fromJson — single source of truth
   // [docId] is optional: if omitted, falls back to data['floorplanId'] ?? ''
   // floorplan_service can call fromJson(snap.data()!) with 1 arg, OR
   // fromJson(snap.data()!, docId: snap.id) with 2 — both compile fine.
@@ -70,10 +70,10 @@ class FloorplanModel {
     );
   }
 
-  // ── toMap — alias kept for any existing Firestore writes ─────────────────────
+  // toMap — alias kept for any existing Firestore writes
   Map<String, dynamic> toMap() => toJson();
 
-  // ── toJson ───────────────────────────────────────────────────────────────────
+  // toJson
   Map<String, dynamic> toJson() {
     return {
       'floorplanId': floorplanId,
@@ -95,7 +95,7 @@ class FloorplanModel {
     };
   }
 
-  // ── copyWith ─────────────────────────────────────────────────────────────────
+  // copyWith
   FloorplanModel copyWith({
     String? floorplanId,
     String? userId,

@@ -140,7 +140,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ── 1. Gradient header (NO overlap tricks) ───────────────────
+              // 1. Gradient header (NO overlap tricks)
               Container(
                 width: double.infinity,
                 decoration: BoxDecoration(
@@ -182,7 +182,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               ),
                               const SizedBox(height: 24),
                               Text(
-                                'Hello, Welcome 👋',
+                                'Hello, Welcome ',
                                 style: tt.bodyMedium?.copyWith(
                                   color: Colors.white.withValues(alpha: 0.75),
                                 ),
@@ -256,7 +256,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // ── 2. Action cards — normal flow, 16px below header ─────────
+              // 2. Action cards — normal flow, 16px below header
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
                 child: _QuickActionsRow(
@@ -278,7 +278,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // ── 3. Rest of content ────────────────────────────────────────
+              // 3. Rest of content
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 28, 20, 32),
                 child: Column(
@@ -349,7 +349,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-// ── Quick Actions ─────────────────────────────────────────────────────────────
+// Quick Actions
 
 class _QuickActionsRow extends StatelessWidget {
   final AppColors c;
@@ -504,7 +504,7 @@ class _ActionCard extends StatelessWidget {
   }
 }
 
-// ── Recent Building Card ──────────────────────────────────────────────────────
+// Recent Building Card
 
 class _RecentBuildingCard extends StatelessWidget {
   final RecentBuildingEntry entry;
@@ -683,7 +683,7 @@ class _Chip extends StatelessWidget {
   }
 }
 
-// ── How It Works ──────────────────────────────────────────────────────────────
+// How It Works
 
 class _HowItWorksCard extends StatelessWidget {
   final AppColors c;

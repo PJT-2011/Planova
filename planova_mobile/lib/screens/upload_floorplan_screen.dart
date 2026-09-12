@@ -42,10 +42,8 @@ class _UploadFloorplanScreenState extends State<UploadFloorplanScreen> {
         setState(() {
           _selectedImage = File(image.path);
         });
-        print('✅ Image selected: ${image.path}');
       }
     } catch (e) {
-      print('❌ Error picking image: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Failed to pick image: $e'),
@@ -69,10 +67,8 @@ class _UploadFloorplanScreenState extends State<UploadFloorplanScreen> {
         setState(() {
           _selectedImage = File(photo.path);
         });
-        print('✅ Photo taken: ${photo.path}');
       }
     } catch (e) {
-      print('❌ Error taking photo: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Failed to take photo: $e'),

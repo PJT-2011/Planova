@@ -2,7 +2,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:flutter/foundation.dart';
 import 'dart:io';
 
 class AuthService {
@@ -14,7 +13,7 @@ class AuthService {
   User? get currentUser => _auth.currentUser;
   Stream<User?> get authStateChanges => _auth.authStateChanges();
 
-  // ── Sign up ───────────────────────────────────────────────────────────────
+  // Sign up
   Future<UserCredential?> signUpWithEmailPassword({
     required String email,
     required String password,
@@ -47,7 +46,7 @@ class AuthService {
     }
   }
 
-  // ── Sign in with email / password ─────────────────────────────────────────
+  // Sign in with email / password
   Future<UserCredential?> signInWithEmailPassword({
     required String email,
     required String password,
@@ -58,7 +57,7 @@ class AuthService {
         password: password,
       );
 
-      // ✅ use set+merge so it works even if the doc was deleted
+      //  use set+merge so it works even if the doc was deleted
       await _firestore.collection('users').doc(userCredential.user!.uid).set({
         'lastLogin': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
@@ -71,11 +70,10 @@ class AuthService {
     }
   }
 
-  // ── Sign in anonymously (guest) ───────────────────────────────────────────
+  // Sign in anonymously (guest)
   Future<UserCredential> signInAnonymously() async {
     try {
       final credential = await _auth.signInAnonymously();
-      debugPrint('✅ [AuthService] Anonymous sign-in: ${credential.user?.uid}');
       return credential;
     } on FirebaseAuthException catch (e) {
       throw _handleAuthException(e);
@@ -84,27 +82,24 @@ class AuthService {
     }
   }
 
-  // ── Step 1: Open Google account picker (no Firebase sign-in yet) ─────────
+  // Step 1: Open Google account picker (no Firebase sign-in yet)
   Future<GoogleSignInAccount?> getGoogleAccount() async {
     try {
-      debugPrint('🔵 [Google] Opening account picker...');
       // Force the consent/account picker to always show — prevents silent skip
       await _googleSignIn.signOut();
       final googleUser = await _googleSignIn.signIn();
-      if (googleUser == null) debugPrint('🟡 [Google] User cancelled picker');
+
       return googleUser;
     } catch (e) {
-      debugPrint('🔴 [Google] Picker error: $e');
       throw 'Google sign-in failed: $e';
     }
   }
 
-  // ── Step 2: Complete Firebase sign-in with confirmed account ──────────────
+  // Step 2: Complete Firebase sign-in with confirmed account
   Future<UserCredential?> signInWithGoogleAccount(
     GoogleSignInAccount googleUser,
   ) async {
     try {
-      debugPrint('🔵 [Google] Signing in with: ${googleUser.email}');
       final GoogleSignInAuthentication googleAuth =
           await googleUser.authentication;
 
@@ -150,22 +145,20 @@ class AuthService {
 
       return userCredential;
     } on FirebaseAuthException catch (e) {
-      debugPrint('🔴 [Google] FirebaseAuthException: ${e.code} - ${e.message}');
       throw _handleAuthException(e);
     } catch (e) {
-      debugPrint('🔴 [Google] Unknown error: $e');
       throw 'Google sign-in failed: $e';
     }
   }
 
-  // ── Sign in with Google (single-step convenience wrapper) ─────────────────
+  // Sign in with Google (single-step convenience wrapper)
   Future<UserCredential?> signInWithGoogle() async {
     final googleUser = await getGoogleAccount();
     if (googleUser == null) return null;
     return signInWithGoogleAccount(googleUser);
   }
 
-  // ── Sign out ──────────────────────────────────────────────────────────────
+  // Sign out
   Future<void> signOut() async {
     try {
       if (await _googleSignIn.isSignedIn()) {
@@ -177,7 +170,7 @@ class AuthService {
     }
   }
 
-  // ── Send email verification ───────────────────────────────────────────────
+  // Send email verification
   Future<void> sendEmailVerification() async {
     try {
       await _auth.currentUser?.sendEmailVerification();
@@ -186,13 +179,13 @@ class AuthService {
     }
   }
 
-  // ── Check if email is verified ────────────────────────────────────────────
+  // Check if email is verified
   Future<bool> isEmailVerified() async {
     await _auth.currentUser?.reload();
     return _auth.currentUser?.emailVerified ?? false;
   }
 
-  // ── Send password reset email ─────────────────────────────────────────────
+  // Send password reset email
   Future<void> sendPasswordResetEmail(String email) async {
     try {
       await _auth.sendPasswordResetEmail(email: email.trim());
@@ -201,7 +194,7 @@ class AuthService {
     }
   }
 
-  // ── Get user data ─────────────────────────────────────────────────────────
+  // Get user data
   Future<Map<String, dynamic>?> getUserData(String userId) async {
     try {
       final doc = await _firestore.collection('users').doc(userId).get();
@@ -212,15 +205,15 @@ class AuthService {
     }
   }
 
-  // ── Update display name ───────────────────────────────────────────────────
+  // Update display name
   Future<void> updateName(String userId, String newName) async {
-    // ✅ use set+merge so it works even if the doc was deleted
+    //  use set+merge so it works even if the doc was deleted
     await _firestore.collection('users').doc(userId).set({
       'name': newName,
     }, SetOptions(merge: true));
   }
 
-  // ── Upload profile photo ──────────────────────────────────────────────────
+  // Upload profile photo
   Future<String> updatePhoto(String userId, File imageFile) async {
     final ref = _storage.ref('profile_photos/$userId.jpg');
     await ref.putFile(imageFile, SettableMetadata(contentType: 'image/jpeg'));
@@ -234,7 +227,7 @@ class AuthService {
     return url;
   }
 
-  // ── Auth exception handler ────────────────────────────────────────────────
+  // Auth exception handler
   String _handleAuthException(FirebaseAuthException e) {
     switch (e.code) {
       case 'weak-password':

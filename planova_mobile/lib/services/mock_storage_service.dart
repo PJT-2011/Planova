@@ -13,10 +13,6 @@ class MockStorageService {
     required File imageFile,
     required Function(double) onProgress,
   }) async {
-    print('🔵 MOCK STORAGE: Starting upload...');
-    print('🔵 User ID: $userId');
-    print('🔵 Floorplan ID: $floorplanId');
-    print('🔵 Source file: ${imageFile.path}');
 
     // Create directory structure
     final appDir = await getApplicationDocumentsDirectory();
@@ -24,25 +20,20 @@ class MockStorageService {
 
     if (!await userDir.exists()) {
       await userDir.create(recursive: true);
-      print('📁 Created directory: ${userDir.path}');
     }
 
     // Destination file path
     final destinationPath = '${userDir.path}/$floorplanId.jpg';
-    print('🔵 Saving to: $destinationPath');
 
     // Simulate upload progress
     onProgress(0.25);
     await Future.delayed(const Duration(milliseconds: 100));
-    print('📤 MOCK Progress: 25%');
 
     onProgress(0.5);
     await Future.delayed(const Duration(milliseconds: 100));
-    print('📤 MOCK Progress: 50%');
 
     onProgress(0.75);
     await Future.delayed(const Duration(milliseconds: 100));
-    print('📤 MOCK Progress: 75%');
 
     // Actually copy the file
     final destinationFile = await imageFile.copy(destinationPath);
@@ -53,16 +44,11 @@ class MockStorageService {
     }
 
     final fileSize = await destinationFile.length();
-    print('✅ MOCK STORAGE: Image saved locally');
-    print('✅ File size: ${(fileSize / 1024).toStringAsFixed(2)} KB');
-    print('✅ File path: ${destinationFile.path}');
 
     onProgress(1.0);
-    print('📤 MOCK Progress: 100%');
 
     // Return mock URL
     final mockUrl = 'mock://$destinationPath';
-    print('✅ MOCK URL: $mockUrl');
 
     return mockUrl;
   }
@@ -75,14 +61,11 @@ class MockStorageService {
 
     // Extract path from mock URL
     final localPath = mockUrl.replaceFirst('mock://', '');
-    print('🔵 [MOCK] Getting file from path: $localPath');
 
     final file = File(localPath);
 
     if (!file.existsSync()) {
-      print('❌ [MOCK] File does not exist: $localPath');
     } else {
-      print('✅ [MOCK] File exists: $localPath');
     }
 
     return file;
@@ -91,16 +74,12 @@ class MockStorageService {
   /// Delete local file
   Future<void> deleteImage(String mockUrl) async {
     try {
-      print('🔵 MOCK STORAGE: Deleting image...');
       final file = getLocalFile(mockUrl);
       if (await file.exists()) {
         await file.delete();
-        print('✅ MOCK STORAGE: Image deleted');
       } else {
-        print('⚠️ MOCK STORAGE: File not found');
       }
     } catch (e) {
-      print('❌ MOCK STORAGE: Delete error: $e');
       throw 'Failed to delete mock image: $e';
     }
   }
@@ -129,7 +108,6 @@ class MockStorageService {
 
       return images;
     } catch (e) {
-      print('❌ MOCK STORAGE: Error listing images: $e');
       return [];
     }
   }
@@ -142,10 +120,9 @@ class MockStorageService {
 
       if (await floorplansDir.exists()) {
         await floorplansDir.delete(recursive: true);
-        print('✅ MOCK STORAGE: All data cleared');
       }
-    } catch (e) {
-      print('❌ MOCK STORAGE: Error clearing data: $e');
+    } catch (_) {
+      // Non-critical: safe to ignore.
     }
   }
 }

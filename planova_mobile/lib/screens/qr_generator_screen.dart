@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:planova_mobile/models/building_model.dart';
+import 'package:planova_mobile/models/floor_model.dart';
+import 'package:planova_mobile/models/floor_access_model.dart';
+import 'package:planova_mobile/services/building_service.dart';
 import 'package:share_plus/share_plus.dart';
 import 'dart:ui' as ui;
 import 'package:flutter/rendering.dart';
@@ -20,6 +23,146 @@ class QRGeneratorScreen extends StatefulWidget {
 
 class _QRGeneratorScreenState extends State<QRGeneratorScreen> {
   final GlobalKey _qrKey = GlobalKey();
+  final BuildingService _buildingService = BuildingService();
+
+  late BuildingModel _building = widget.building;
+  List<FloorModel> _floors = [];
+  bool _isLoadingFloors = true;
+  bool _isSaving = false;
+
+  // Editable draft — only written to Firestore when the admin taps Save,
+  // so browsing the floor list doesn't change access until confirmed.
+  late FloorAccessType _draftAccessType = _building.qrFloorAccessType;
+  late Set<int> _draftFloorNumbers = _building.qrFloorNumbers.toSet();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFloors();
+  }
+
+  Future<void> _loadFloors() async {
+    try {
+      final floors = await _buildingService.getFloors(_building.id);
+      if (mounted) setState(() {
+        _floors = floors;
+        _isLoadingFloors = false;
+      });
+    } catch (e) {
+      if (mounted) setState(() => _isLoadingFloors = false);
+    }
+  }
+
+  bool get _hasUnsavedChanges =>
+      _draftAccessType != _building.qrFloorAccessType ||
+      !_setEquals(_draftFloorNumbers, _building.qrFloorNumbers.toSet());
+
+  bool _setEquals(Set<int> a, Set<int> b) =>
+      a.length == b.length && a.containsAll(b);
+
+  Future<void> _saveFloorAccess() async {
+    if (_draftAccessType == FloorAccessType.selected &&
+        _draftFloorNumbers.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Select at least one floor, or choose "All Floors"'),
+          backgroundColor: AppTheme.colors(context).error,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isSaving = true);
+    try {
+      await _buildingService.updateQRFloorAccess(
+        buildingId: _building.id,
+        accessType: _draftAccessType,
+        floorNumbers: _draftFloorNumbers.toList(),
+      );
+      HapticFeedback.mediumImpact();
+      if (mounted) {
+        setState(() {
+          _building = _building.copyWith(
+            qrFloorAccessType: _draftAccessType,
+            qrFloorNumbers: _draftFloorNumbers.toList(),
+          );
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Floor access saved for this QR code'),
+            backgroundColor: AppTheme.colors(context).success,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to save: $e'),
+            backgroundColor: AppTheme.colors(context).error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  Future<void> _confirmReapplyToExistingVisitors() async {
+    final c = AppTheme.colors(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Update existing visitors too?'),
+        content: const Text(
+          'This will overwrite floor access for everyone who has already '
+          'scanned this QR code, matching what\'s currently saved above. '
+          'Any manual per-user changes made in User Management will be '
+          'replaced.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: c.error),
+            child: const Text('Update Everyone'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      await _buildingService.reapplyQrAccessToAllVisitors(_building.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Existing visitors updated'),
+            backgroundColor: c.success,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to update visitors: $e'),
+            backgroundColor: c.error,
+          ),
+        );
+      }
+    }
+  }
+
+  String get _accessSummary {
+    if (_building.qrFloorAccessType == FloorAccessType.all) return 'All floors';
+    if (_building.qrFloorNumbers.isEmpty) return 'No floors';
+    final sorted = _building.qrFloorNumbers.toList()..sort();
+    return 'Floor${sorted.length == 1 ? '' : 's'} ${sorted.join(", ")}';
+  }
 
   Future<File> _captureQR() async {
     final boundary =
@@ -125,9 +268,9 @@ class _QRGeneratorScreenState extends State<QRGeneratorScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            // ── Building name ─────────────────────────────────────────────
+            // Building name
             Text(
-              widget.building.buildingName,
+              _building.buildingName,
               style: tt.headlineMedium?.copyWith(
                 color: c.onBackground,
                 fontWeight: FontWeight.w700,
@@ -136,13 +279,225 @@ class _QRGeneratorScreenState extends State<QRGeneratorScreen> {
             ),
             const SizedBox(height: 4),
             Text(
-              widget.building.address,
+              _building.address,
               style: tt.bodyMedium?.copyWith(color: c.onSurfaceSecondary),
               textAlign: TextAlign.center,
             ),
-            const SizedBox(height: 28),
+            const SizedBox(height: 24),
 
-            // ── QR code card — ALWAYS white (needed for scanning) ─────────
+            // Floor Access card — controls what this QR code actually grants
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(18),
+              decoration: isDark ? darkCardDecoration() : lightCardDecoration(),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(7),
+                        decoration: BoxDecoration(
+                          color: c.primaryContainer,
+                          borderRadius: BorderRadius.circular(AppRadius.xs),
+                        ),
+                        child: Icon(
+                          Icons.layers_rounded,
+                          color: c.primary,
+                          size: 16,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Floor Access',
+                          style: tt.titleSmall?.copyWith(
+                            color: c.onSurface,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: c.chipFill,
+                          borderRadius: BorderRadius.circular(AppRadius.full),
+                        ),
+                        child: Text(
+                          _accessSummary,
+                          style: tt.labelSmall?.copyWith(color: c.chipText),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 34),
+                    child: Text(
+                      'Choose which floors people get when they scan this code.',
+                      style: tt.bodySmall?.copyWith(color: c.onSurfaceSecondary),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  if (_isLoadingFloors)
+                    Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: CircularProgressIndicator(color: c.primary),
+                      ),
+                    )
+                  else if (_floors.isEmpty)
+                    Text(
+                      'Add floors to this building to configure QR access.',
+                      style: tt.bodySmall?.copyWith(color: c.onSurfaceSecondary),
+                    )
+                  else ...[
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _QrAccessOption(
+                            label: 'All Floors',
+                            icon: Icons.public_rounded,
+                            selected: _draftAccessType == FloorAccessType.all,
+                            c: c,
+                            tt: tt,
+                            onTap: () => setState(
+                              () => _draftAccessType = FloorAccessType.all,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _QrAccessOption(
+                            label: 'Selected Floors',
+                            icon: Icons.checklist_rounded,
+                            selected:
+                                _draftAccessType == FloorAccessType.selected,
+                            c: c,
+                            tt: tt,
+                            onTap: () => setState(
+                              () =>
+                                  _draftAccessType = FloorAccessType.selected,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (_draftAccessType == FloorAccessType.selected) ...[
+                      const SizedBox(height: 12),
+                      Container(
+                        decoration: BoxDecoration(
+                          color: c.surfaceElevated,
+                          borderRadius: BorderRadius.circular(AppRadius.md),
+                          border: Border.all(color: c.border),
+                        ),
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Column(
+                          children: _floors.map((floor) {
+                            final checked = _draftFloorNumbers.contains(
+                              floor.floorNumber,
+                            );
+                            return CheckboxListTile(
+                              dense: true,
+                              value: checked,
+                              activeColor: c.primary,
+                              title: Text(
+                                floor.floorName,
+                                style: tt.bodyMedium?.copyWith(
+                                  color: c.onSurface,
+                                ),
+                              ),
+                              subtitle: Text(
+                                'Floor ${floor.floorNumber}',
+                                style: tt.bodySmall?.copyWith(
+                                  color: c.onSurfaceSecondary,
+                                ),
+                              ),
+                              onChanged: (val) {
+                                setState(() {
+                                  if (val == true) {
+                                    _draftFloorNumbers.add(floor.floorNumber);
+                                  } else {
+                                    _draftFloorNumbers.remove(
+                                      floor.floorNumber,
+                                    );
+                                  }
+                                });
+                              },
+                            );
+                          }).toList(),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: GestureDetector(
+                            onTap: (_isSaving || !_hasUnsavedChanges)
+                                ? null
+                                : _saveFloorAccess,
+                            child: AnimatedOpacity(
+                              opacity: (_isSaving || !_hasUnsavedChanges)
+                                  ? 0.5
+                                  : 1.0,
+                              duration: const Duration(milliseconds: 200),
+                              child: Container(
+                                height: 46,
+                                decoration: BoxDecoration(
+                                  gradient: heroGradient(),
+                                  borderRadius: BorderRadius.circular(
+                                    AppRadius.sm,
+                                  ),
+                                ),
+                                child: Center(
+                                  child: _isSaving
+                                      ? const SizedBox(
+                                          height: 18,
+                                          width: 18,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            valueColor: AlwaysStoppedAnimation(
+                                              Colors.white,
+                                            ),
+                                          ),
+                                        )
+                                      : Text(
+                                          'Save Floor Access',
+                                          style: tt.labelMedium?.copyWith(
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    GestureDetector(
+                      onTap: _confirmReapplyToExistingVisitors,
+                      child: Text(
+                        'Also update people who already scanned this code',
+                        textAlign: TextAlign.center,
+                        style: tt.labelSmall?.copyWith(
+                          color: c.onSurfaceSecondary,
+                          decoration: TextDecoration.underline,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 24),
+
+            // QR code card — ALWAYS white (needed for scanning)
             RepaintBoundary(
               key: _qrKey,
               child: Container(
@@ -187,7 +542,7 @@ class _QRGeneratorScreenState extends State<QRGeneratorScreen> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      widget.building.buildingName,
+                      _building.buildingName,
                       style: const TextStyle(
                         fontSize: 13,
                         color: Color(0xFF4A6080),
@@ -199,7 +554,7 @@ class _QRGeneratorScreenState extends State<QRGeneratorScreen> {
             ),
             const SizedBox(height: 28),
 
-            // ── Stats card ────────────────────────────────────────────────
+            // Stats card
             Container(
               padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
               decoration: infoCardDeco,
@@ -208,9 +563,9 @@ class _QRGeneratorScreenState extends State<QRGeneratorScreen> {
                 children: [
                   _StatColumn(
                     icon: Icons.layers_rounded,
-                    value: '${widget.building.totalFloors}',
+                    value: '${_building.totalFloors}',
                     label:
-                        'Floor${widget.building.totalFloors == 1 ? '' : 's'}',
+                        'Floor${_building.totalFloors == 1 ? '' : 's'}',
                     c: c,
                     tt: tt,
                   ),
@@ -223,8 +578,8 @@ class _QRGeneratorScreenState extends State<QRGeneratorScreen> {
                   ),
                   _StatColumn(
                     icon: Icons.meeting_room_rounded,
-                    value: '${widget.building.totalRooms}',
-                    label: 'Room${widget.building.totalRooms == 1 ? '' : 's'}',
+                    value: '${_building.totalRooms}',
+                    label: 'Room${_building.totalRooms == 1 ? '' : 's'}',
                     c: c,
                     tt: tt,
                   ),
@@ -233,7 +588,7 @@ class _QRGeneratorScreenState extends State<QRGeneratorScreen> {
             ),
             const SizedBox(height: 24),
 
-            // ── Share button ──────────────────────────────────────────────
+            // Share button
             GestureDetector(
               onTap: _shareQRCode,
               child: Container(
@@ -262,7 +617,7 @@ class _QRGeneratorScreenState extends State<QRGeneratorScreen> {
             ),
             const SizedBox(height: 12),
 
-            // ── Download button ───────────────────────────────────────────
+            // Download button
             GestureDetector(
               onTap: _downloadQRCode,
               child: Container(
@@ -287,7 +642,7 @@ class _QRGeneratorScreenState extends State<QRGeneratorScreen> {
             ),
             const SizedBox(height: 28),
 
-            // ── Instructions ──────────────────────────────────────────────
+            // Instructions
             Container(
               padding: const EdgeInsets.all(18),
               decoration: isDark ? darkCardDecoration() : lightCardDecoration(),
@@ -335,7 +690,9 @@ class _QRGeneratorScreenState extends State<QRGeneratorScreen> {
                     number: '3',
                     c: c,
                     tt: tt,
-                    text: 'They scan this code to access all floors and rooms',
+                    text: _building.qrFloorAccessType == FloorAccessType.all
+                        ? 'They scan this code to access all floors and rooms'
+                        : 'They scan this code to access $_accessSummary only',
                   ),
                   _Instruction(
                     number: '4',
@@ -349,7 +706,7 @@ class _QRGeneratorScreenState extends State<QRGeneratorScreen> {
             ),
             const SizedBox(height: 20),
 
-            // ── QR code value ─────────────────────────────────────────────
+            // QR code value
             GestureDetector(
               onTap: () {
                 Clipboard.setData(ClipboardData(text: widget.building.qrCode));
@@ -417,7 +774,62 @@ class _QRGeneratorScreenState extends State<QRGeneratorScreen> {
   }
 }
 
-// ── Stat column ───────────────────────────────────────────────────────────────
+// QR floor-access option chip
+
+class _QrAccessOption extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final AppColors c;
+  final TextTheme tt;
+  final VoidCallback onTap;
+
+  const _QrAccessOption({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.c,
+    required this.tt,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
+        decoration: BoxDecoration(
+          color: selected ? c.primaryContainer : c.surfaceElevated,
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          border: Border.all(
+            color: selected ? c.primary : c.border,
+            width: selected ? 1.5 : 1,
+          ),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 16, color: selected ? c.primary : c.iconMuted),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                label,
+                style: tt.labelMedium?.copyWith(
+                  color: selected ? c.primary : c.onSurfaceSecondary,
+                  fontWeight: FontWeight.w600,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// Stat column
 
 class _StatColumn extends StatelessWidget {
   final IconData icon;
@@ -452,7 +864,7 @@ class _StatColumn extends StatelessWidget {
   }
 }
 
-// ── Instruction row ───────────────────────────────────────────────────────────
+// Instruction row
 
 class _Instruction extends StatelessWidget {
   final String number, text;

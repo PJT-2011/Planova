@@ -1,19 +1,15 @@
-// ============================================================
 // app_theme.dart — Planova Design System v3
 // Inspired by: BrainByte E-Learning Figma (NAM Design Studio)
 // Palette: Vivid Blue (your brand) · Near-Black · Lavender Surface
 // Typography: Urbanist (headings) · Inter (body)
 // Dual-mode: Light (primary) + Dark (full parity)
-// ============================================================
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-// ────────────────────────────────────────────────────────────
 // 1. RAW PALETTE
-// ────────────────────────────────────────────────────────────
 class _Palette {
-  // ── Vivid Blue Scale (your brand, maps to BrainByte's purple) ──
+  // Vivid Blue Scale (your brand, maps to BrainByte's purple)
   static const blue600 = Color(0xFF1450A8); // deep — light mode primary
   static const blue500 = Color(0xFF1A6ADB); // vibrant — main CTA
   static const blue400 = Color(0xFF3B82F6); // bright — dark mode primary
@@ -21,47 +17,45 @@ class _Palette {
   static const blue100 = Color(0xFFBFDBFE); // tint
   static const blue050 = Color(0xFFEFF6FF); // wash
 
-  // ── BrainByte-inspired indigo-blue gradient tones ──
-  // (their #6D57FC → your brand blue mapping)
+  // BrainByte-inspired indigo-blue gradient tones
+  // (their #6D57FC -> your brand blue mapping)
   static const indigoBlue700 = Color(0xFF0D3366); // gradient deep end
   static const indigoBlue500 = Color(0xFF1A6ADB); // gradient mid
   static const indigoBlue400 = Color(0xFF3B82F6); // gradient bright end
 
-  // ── Lavender Surface (BrainByte's #F0EEFF → blue-tinted equivalent) ──
+  // Lavender Surface (BrainByte's #F0EEFF -> blue-tinted equivalent)
   static const lavender100 = Color(0xFFEEF4FF); // page bg light (was #F0EEFF)
   static const lavender200 = Color(0xFFDCEAFF); // section bg
   static const lavenderTag = Color(0xFFE0EDFF); // tag / chip fill
 
-  // ── Near-Black / Dark (BrainByte's #0C0A1C mapped to blue-dark) ──
+  // Near-Black / Dark (BrainByte's #0C0A1C mapped to blue-dark)
   static const dark950 = Color(0xFF0A1628); // page bg dark
   static const dark900 = Color(0xFF0D1E36); // scaffold dark
-  static const dark850 = Color(0xFF1C2942); // card dark  ← main card
+  static const dark850 = Color(0xFF1C2942); // card dark -> main card
   static const dark800 = Color(0xFF243450); // elevated card
   static const dark700 = Color(0xFF1C2942); // input fill dark
   static const dark600 = Color(0xFF243450); // divider / border dark
   static const dark500 = Color(0xFF304263); // muted icon
 
-  // ── White / Light ──
+  // White / Light
   static const white = Color(0xFFFFFFFF);
   static const offWhite = Color(0xFFFDFDFF); // BrainByte's #FDFDFF
   static const light200 = Color(0xFFE5EBF5);
   static const light300 = Color(0xFFCDD8EE);
   static const light400 = Color(0xFF8FA3C8); // muted text light
 
-  // ── Semantic ──
+  // Semantic
   static const success = Color(0xFF22C55E);
   static const warning = Color(0xFFF59E0B);
   static const error = Color(0xFFEF4444);
 
-  // ── Text ──
+  // Text
   static const textPrimary = Color(0xFF0C1A30); // near-black (blue-tinted)
   static const textSecondary = Color(0xFF4A6080);
   static const textTertiary = Color(0xFF8FA3C8);
 }
 
-// ────────────────────────────────────────────────────────────
 // 2. SEMANTIC COLOR TOKENS
-// ────────────────────────────────────────────────────────────
 class AppColors {
   const AppColors._({
     required this.primary,
@@ -179,10 +173,8 @@ class AppColors {
 
   final Brightness statusBarBrightness;
 
-  // ═══════════════════════════════════════════════════════════
   // LIGHT THEME
   // Lavender-tinted white bg · deep blue text · vivid blue CTA
-  // ═══════════════════════════════════════════════════════════
   static const AppColors light = AppColors._(
     primary: _Palette.blue500,
     primaryVariant: _Palette.blue600,
@@ -249,10 +241,8 @@ class AppColors {
     statusBarBrightness: Brightness.dark,
   );
 
-  // ═══════════════════════════════════════════════════════════
   // DARK THEME
   // Near-black blue bg · white text · vivid blue CTA
-  // ═══════════════════════════════════════════════════════════
   static const AppColors dark = AppColors._(
     primary: _Palette.blue400,
     primaryVariant: _Palette.blue500,
@@ -320,9 +310,7 @@ class AppColors {
   );
 }
 
-// ────────────────────────────────────────────────────────────
 // 3. TYPOGRAPHY  (Urbanist headings · Inter body — BrainByte style)
-// ────────────────────────────────────────────────────────────
 class AppTextTheme {
   // Base scale — colour applied per-theme via .apply()
   static TextTheme get _base => const TextTheme(
@@ -423,9 +411,7 @@ class AppTextTheme {
       _base.apply(bodyColor: c.onSurface, displayColor: c.onBackground);
 }
 
-// ────────────────────────────────────────────────────────────
 // 4. MAIN ThemeData FACTORY
-// ────────────────────────────────────────────────────────────
 class AppTheme {
   AppTheme._();
 
@@ -435,7 +421,7 @@ class AppTheme {
       ? AppColors.dark
       : AppColors.light;
 
-  // ── Shared shape helpers ──
+  // Shared shape helpers
   static final _cardShape = RoundedRectangleBorder(
     borderRadius: BorderRadius.circular(20),
   );
@@ -447,9 +433,7 @@ class AppTheme {
     borderSide: BorderSide.none,
   );
 
-  // ══════════════════════════════════════════════════════════
   // LIGHT ThemeData
-  // ══════════════════════════════════════════════════════════
   static ThemeData get light {
     const c = AppColors.light;
     final tt = AppTextTheme.forColors(c);
@@ -671,9 +655,7 @@ class AppTheme {
     );
   }
 
-  // ══════════════════════════════════════════════════════════
   // DARK ThemeData
-  // ══════════════════════════════════════════════════════════
   static ThemeData get dark {
     const c = AppColors.dark;
     final tt = AppTextTheme.forColors(c);
@@ -893,12 +875,10 @@ class AppTheme {
   }
 }
 
-// ────────────────────────────────────────────────────────────
 // 5. GRADIENT HELPERS
-// ────────────────────────────────────────────────────────────
 
 /// Hero gradient — used in login header, onboarding, splash
-/// Deep blue → vivid blue (BrainByte-inspired, your blue palette)
+/// Deep blue -> vivid blue (BrainByte-inspired, your blue palette)
 LinearGradient heroGradient({
   AlignmentGeometry begin = Alignment.topLeft,
   AlignmentGeometry end = Alignment.bottomRight,
@@ -922,9 +902,7 @@ LinearGradient imageDarkOverlay() => const LinearGradient(
   end: Alignment.bottomCenter,
 );
 
-// ────────────────────────────────────────────────────────────
 // 6. CARD DECORATIONS
-// ────────────────────────────────────────────────────────────
 
 BoxDecoration lightCardDecoration({
   double radius = 20,
@@ -960,9 +938,7 @@ BoxDecoration heroCardDecoration({double radius = 20}) => BoxDecoration(
   ],
 );
 
-// ────────────────────────────────────────────────────────────
 // 7. SPACING & RADIUS SCALES
-// ────────────────────────────────────────────────────────────
 class AppSpacing {
   static const double xs = 4;
   static const double sm = 8;
@@ -983,9 +959,7 @@ class AppRadius {
   static const double full = 999;
 }
 
-// ────────────────────────────────────────────────────────────
 // 8. SHADOW TOKENS
-// ────────────────────────────────────────────────────────────
 class AppShadows {
   static const List<BoxShadow> card = [
     BoxShadow(color: Color(0x0A0C1A30), blurRadius: 12, offset: Offset(0, 4)),

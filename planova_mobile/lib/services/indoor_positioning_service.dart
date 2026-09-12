@@ -16,7 +16,7 @@ class IndoorPositioningService {
   bool _stepPeakDetected = false;
   DateTime _lastStepTime = DateTime.now();
 
-  // Smooth heading via low-pass filter (α = 0.15 → smooth, low lag)
+  // Smooth heading via low-pass filter (alpha = 0.15 -> smooth, low lag)
   double _smoothedHeading = 0.0;
   static const double _alpha = 0.15;
 
@@ -31,7 +31,6 @@ class IndoorPositioningService {
 
   /// Starts navigation and returns the position stream.
   Stream<GridPoint> startNavigation(RouteModel route) {
-    print('🔵 [POS] Starting navigation — ${route.path.length} waypoints');
 
     _currentRouteIndex = 0;
     _routePath = route.path;
@@ -56,7 +55,6 @@ class IndoorPositioningService {
       _headingController.add(_smoothedHeading);
     });
 
-    print('✅ [POS] Sensors started');
   }
 
   void _detectSteps(AccelerometerEvent event) {
@@ -70,7 +68,6 @@ class IndoorPositioningService {
       _stepPeakDetected = false;
       _lastStepTime = now;
       _stepCount++;
-      print('👣 [POS] Step #$_stepCount (mag: ${mag.toStringAsFixed(2)})');
       _advanceAlongRoute();
     }
   }
@@ -96,45 +93,39 @@ class IndoorPositioningService {
 
       final pct = ((_currentRouteIndex / _routePath!.length) * 100)
           .toStringAsFixed(0);
-      print(
-        '📍 [POS] Waypoint $_currentRouteIndex/${_routePath!.length} ($pct%) '
-        '— heading ${_smoothedHeading.toStringAsFixed(1)}°',
-      );
 
       _positionController.add(newPos);
     }
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
+  // Helpers
 
   /// Compass-style bearing (0 = up/north, 90 = right) between two grid points.
   double _bearingBetween(GridPoint from, GridPoint to) {
     final dx = (to.col - from.col).toDouble();
-    final dy = (to.row - from.row).toDouble(); // row↓ = south
+    final dy = (to.row - from.row).toDouble(); // row increases downward = south
     final deg = atan2(dx, -dy) * 180 / pi;
     return (deg + 360) % 360;
   }
 
-  /// Shortest-path angle lerp (handles 359 → 1 wrap-around).
+  /// Shortest-path angle lerp (handles 359 -> 1 wrap-around).
   double _lerpAngle(double from, double to, double t) {
     final diff = ((to - from) + 540) % 360 - 180;
     return (from + diff * t + 360) % 360;
   }
 
-  // ── Lifecycle ─────────────────────────────────────────────────────────────
+  // Lifecycle
 
   void stopNavigation() {
     _accelSubscription?.cancel();
     _compassSubscription?.cancel();
     _accelSubscription = null;
     _compassSubscription = null;
-    print('🔵 [POS] Navigation stopped');
   }
 
   void dispose() {
     stopNavigation();
     _positionController.close();
     _headingController.close();
-    print('🔵 [POS] Disposed');
   }
 }

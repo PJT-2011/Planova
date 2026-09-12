@@ -144,7 +144,7 @@ class _FloorplanProcessingScreenState extends State<FloorplanProcessingScreen>
         children: [
           const SizedBox(height: 20),
 
-          // ── Animated icon area ──────────────────────────────────────────
+          // Animated icon area
           SizedBox(
             width: 120,
             height: 120,
@@ -215,7 +215,7 @@ class _FloorplanProcessingScreenState extends State<FloorplanProcessingScreen>
           ),
           const SizedBox(height: 28),
 
-          // ── Title & subtitle ────────────────────────────────────────────
+          // Title & subtitle
           Text(
             isReady
                 ? 'Ready!'
@@ -242,7 +242,7 @@ class _FloorplanProcessingScreenState extends State<FloorplanProcessingScreen>
           ),
           const SizedBox(height: 32),
 
-          // ── Progress bar ────────────────────────────────────────────────
+          // Progress bar
           Container(
             decoration: isDark
                 ? BoxDecoration(

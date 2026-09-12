@@ -10,6 +10,8 @@ class RoomModel {
   final int floorNumber;
   final List<String> keywords;
   final DateTime createdAt;
+  final bool isOffLimits;
+  final String? offLimitsNote;
 
   RoomModel({
     required this.id,
@@ -20,6 +22,8 @@ class RoomModel {
     required this.floorNumber,
     List<String>? keywords,
     required this.createdAt,
+    this.isOffLimits = false,
+    this.offLimitsNote,
   }) : keywords = keywords ?? _generateKeywords(name);
 
   // Auto-generate search keywords from room name
@@ -51,6 +55,8 @@ class RoomModel {
       'floorNumber': floorNumber,
       'keywords': keywords,
       'createdAt': Timestamp.fromDate(createdAt),
+      'isOffLimits': isOffLimits,
+      'offLimitsNote': offLimitsNote,
     };
   }
 
@@ -68,8 +74,12 @@ class RoomModel {
         col: gridPointData['col'] ?? 0,
       ),
       floorNumber: json['floorNumber'] ?? 0,
-      keywords: (json['keywords'] as List<dynamic>?)?.cast<String>(),
+      keywords: (json['keywords'] as List<dynamic>?)
+          ?.map((e) => e.toString())
+          .toList(),
       createdAt: (json['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      isOffLimits: json['isOffLimits'] ?? false,
+      offLimitsNote: json['offLimitsNote'],
     );
   }
 
@@ -83,6 +93,8 @@ class RoomModel {
     int? floorNumber,
     List<String>? keywords,
     DateTime? createdAt,
+    bool? isOffLimits,
+    String? offLimitsNote,
   }) {
     return RoomModel(
       id: id ?? this.id,
@@ -93,6 +105,8 @@ class RoomModel {
       floorNumber: floorNumber ?? this.floorNumber,
       keywords: keywords ?? this.keywords,
       createdAt: createdAt ?? this.createdAt,
+      isOffLimits: isOffLimits ?? this.isOffLimits,
+      offLimitsNote: offLimitsNote ?? this.offLimitsNote,
     );
   }
 

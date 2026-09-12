@@ -40,7 +40,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Appearance ───────────────────────────────────────────────
+            // Appearance
             _SectionLabel(label: 'Appearance', c: c, tt: tt),
             const SizedBox(height: 10),
             _SettingsCard(
@@ -60,7 +60,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
             const SizedBox(height: 28),
 
-            // ── About ────────────────────────────────────────────────────
+            // About
             _SectionLabel(label: 'About', c: c, tt: tt),
             const SizedBox(height: 10),
             _SettingsCard(
@@ -125,7 +125,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
             const SizedBox(height: 28),
 
-            // ── Support ──────────────────────────────────────────────────
+            // Support
             _SectionLabel(label: 'Support', c: c, tt: tt),
             const SizedBox(height: 10),
             _SettingsCard(
@@ -171,7 +171,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 }
 
-// ── Themed dark mode toggle ───────────────────────────────────────────────────
+// Themed dark mode toggle
 
 class _ThemeToggleTile extends StatelessWidget {
   final bool isDark;
@@ -234,7 +234,7 @@ class _ThemeToggleTile extends StatelessWidget {
   }
 }
 
-// ── Reusable sub-widgets ──────────────────────────────────────────────────────
+// Reusable sub-widgets
 
 class _SectionLabel extends StatelessWidget {
   final String label;

@@ -107,7 +107,7 @@ class _GuestHomeScreenState extends State<GuestHomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ── 1. Gradient header ───────────────────────────────────────
+              // 1. Gradient header
               Container(
                 width: double.infinity,
                 decoration: BoxDecoration(
@@ -181,7 +181,7 @@ class _GuestHomeScreenState extends State<GuestHomeScreen> {
                         ),
                         const SizedBox(height: 24),
                         Text(
-                          'Hello, Welcome 👋',
+                          'Hello, Welcome ',
                           style: tt.bodyMedium?.copyWith(
                             color: Colors.white.withValues(alpha: 0.75),
                           ),
@@ -207,7 +207,7 @@ class _GuestHomeScreenState extends State<GuestHomeScreen> {
                 ),
               ),
 
-              // ── 2. Scan card ─────────────────────────────────────────────
+              // 2. Scan card
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
                 child: _ScanCard(
@@ -219,7 +219,7 @@ class _GuestHomeScreenState extends State<GuestHomeScreen> {
                 ),
               ),
 
-              // ── 3. Rest of content ────────────────────────────────────────
+              // 3. Rest of content
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
                 child: Column(
@@ -306,7 +306,7 @@ class _GuestHomeScreenState extends State<GuestHomeScreen> {
   }
 }
 
-// ── Card decoration helpers (consistent dark elevation) ───────────────────────
+// Card decoration helpers (consistent dark elevation)
 
 BoxDecoration _darkCard({double radius = 20}) => BoxDecoration(
   color: const Color(0xFF1C2942),
@@ -314,7 +314,7 @@ BoxDecoration _darkCard({double radius = 20}) => BoxDecoration(
   border: Border.all(color: Colors.white.withValues(alpha: 0.10), width: 1),
 );
 
-// ── Scan QR card ──────────────────────────────────────────────────────────────
+// Scan QR card
 
 class _ScanCard extends StatelessWidget {
   final String userId;
@@ -418,7 +418,7 @@ class _ScanCard extends StatelessWidget {
   }
 }
 
-// ── Recent card ───────────────────────────────────────────────────────────────
+// Recent card
 
 class _RecentCard extends StatelessWidget {
   final RecentBuildingEntry entry;
@@ -586,7 +586,7 @@ class _Pill extends StatelessWidget {
   }
 }
 
-// ── Admin prompt ──────────────────────────────────────────────────────────────
+// Admin prompt
 
 class _AdminPromptCard extends StatelessWidget {
   final bool isDark;
@@ -677,7 +677,7 @@ class _AdminPromptCard extends StatelessWidget {
   }
 }
 
-// ── How to navigate ───────────────────────────────────────────────────────────
+// How to navigate
 
 class _HowToCard extends StatelessWidget {
   final bool isDark;

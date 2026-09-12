@@ -1,16 +1,17 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:flutter/foundation.dart'; // required for debugPrint
 import 'package:planova_mobile/models/building_model.dart';
 import 'package:planova_mobile/models/floor_model.dart';
 import 'package:planova_mobile/models/room_model.dart';
 import 'package:planova_mobile/models/grid_model.dart';
+import 'package:planova_mobile/models/door_model.dart';
+import 'package:planova_mobile/models/floor_access_model.dart';
 import 'package:uuid/uuid.dart';
 
 class BuildingService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final Uuid _uuid = const Uuid();
 
-  // ==================== BUILDING OPERATIONS ====================
+  // BUILDING OPERATIONS
 
   /// Create a new building
   Future<BuildingModel> createBuilding({
@@ -36,7 +37,6 @@ class BuildingService {
         .doc(buildingId)
         .set(building.toJson());
 
-    debugPrint('✅ [BuildingService] Building created: $buildingId');
     return building;
   }
 
@@ -84,7 +84,6 @@ class BuildingService {
     Map<String, dynamic> updates,
   ) async {
     await _firestore.collection('buildings').doc(buildingId).update(updates);
-    debugPrint('✅ [BuildingService] Building updated: $buildingId');
   }
 
   /// Delete building and all its floors/rooms
@@ -97,10 +96,9 @@ class BuildingService {
 
     // Delete building
     await _firestore.collection('buildings').doc(buildingId).delete();
-    debugPrint('✅ [BuildingService] Building deleted: $buildingId');
   }
 
-  // ==================== FLOOR OPERATIONS ====================
+  // FLOOR OPERATIONS
 
   /// Add a floor to a building
   Future<FloorModel> addFloor({
@@ -111,7 +109,6 @@ class BuildingService {
     String? floorId, // optional — caller can pass pre-generated ID
     Map<String, dynamic>? processedData,
   }) async {
-    // FIX: was 'flr_\${_uuid...}' (escaped, literal string) — now correct interpolation
     final resolvedFloorId = floorId ?? 'flr_${_uuid.v4().substring(0, 8)}';
 
     final floor = FloorModel(
@@ -135,9 +132,6 @@ class BuildingService {
     final floors = await getFloors(buildingId);
     await updateBuilding(buildingId, {'totalFloors': floors.length});
 
-    debugPrint(
-      '✅ [BuildingService] Floor added: $resolvedFloorId to building $buildingId',
-    );
     return floor;
   }
 
@@ -181,7 +175,6 @@ class BuildingService {
         .collection('floors')
         .doc(floorId)
         .update(updates);
-    debugPrint('✅ [BuildingService] Floor updated: $floorId');
   }
 
   /// Delete floor and all its rooms
@@ -204,10 +197,9 @@ class BuildingService {
     final floors = await getFloors(buildingId);
     await updateBuilding(buildingId, {'totalFloors': floors.length});
 
-    debugPrint('✅ [BuildingService] Floor deleted: $floorId');
   }
 
-  // ==================== ROOM OPERATIONS ====================
+  // ROOM OPERATIONS
 
   /// Add a room to a floor
   Future<RoomModel> addRoom({
@@ -248,7 +240,6 @@ class BuildingService {
     final allRooms = await getAllRooms(buildingId);
     await updateBuilding(buildingId, {'totalRooms': allRooms.length});
 
-    debugPrint('✅ [BuildingService] Room added: $roomId to floor $floorId');
     return room;
   }
 
@@ -318,7 +309,6 @@ class BuildingService {
         .collection('rooms')
         .doc(roomId)
         .update(updates);
-    debugPrint('✅ [BuildingService] Room updated: $roomId');
   }
 
   /// Delete room
@@ -344,12 +334,19 @@ class BuildingService {
     final allRooms = await getAllRooms(buildingId);
     await updateBuilding(buildingId, {'totalRooms': allRooms.length});
 
-    debugPrint('✅ [BuildingService] Room deleted: $roomId');
   }
 
-  // ==================== VISITOR ACCESS ====================
+  // VISITOR ACCESS
 
-  /// Grant visitor access to building
+  /// Grant visitor access to building. If this is the first time this user
+  /// has been granted access to this building, this also seeds their
+  /// permanent floor access from the building's currently configured QR
+  /// floor permissions — this is what actually makes "scan QR -> only get
+  /// the floors the admin picked" work, rather than a QR scan silently
+  /// defaulting everyone to unrestricted access. If the user already has a
+  /// userAccess doc (an admin has since customized it, or this isn't their
+  /// first scan), it's left untouched — a manual admin change always wins
+  /// over whatever the QR happened to be configured as at scan time.
   Future<void> grantAccess(String buildingId, String userId) async {
     await _firestore
         .collection('buildings')
@@ -362,9 +359,92 @@ class BuildingService {
           'expiresAt': null,
         });
 
-    debugPrint(
-      '✅ [BuildingService] Access granted to user $userId for building $buildingId',
+    final userAccessRef = _firestore
+        .collection('buildings')
+        .doc(buildingId)
+        .collection('userAccess')
+        .doc(userId);
+    final existing = await userAccessRef.get();
+    if (existing.exists) return;
+
+    final buildingDoc = await _firestore
+        .collection('buildings')
+        .doc(buildingId)
+        .get();
+    final data = buildingDoc.data();
+    final accessType = data?['qrFloorAccessType'] == 'selected'
+        ? FloorAccessType.selected
+        : FloorAccessType.all;
+    final floorNumbers = List<int>.from(data?['qrFloorNumbers'] ?? const []);
+
+    final grant = UserFloorAccessModel(
+      userId: userId,
+      buildingId: buildingId,
+      accessType: accessType,
+      floorNumbers: floorNumbers,
+      updatedAt: DateTime.now(),
+      updatedBy: 'qr_scan',
     );
+    await userAccessRef.set(grant.toJson());
+  }
+
+  /// Save which floors this building's QR code grants access to. Applies
+  /// to every future scan immediately; existing visitors keep whatever
+  /// access they already have unless [reapplyQrAccessToAllVisitors] is
+  /// also called.
+  Future<void> updateQRFloorAccess({
+    required String buildingId,
+    required FloorAccessType accessType,
+    List<int> floorNumbers = const [],
+  }) async {
+    await _firestore.collection('buildings').doc(buildingId).update({
+      'qrFloorAccessType': accessType.name,
+      'qrFloorNumbers': floorNumbers,
+    });
+  }
+
+  /// Overwrites every existing visitor's permanent floor access with the
+  /// building's current QR floor configuration — for an admin who's
+  /// tightening a QR code after people have already scanned the old,
+  /// unrestricted version. This intentionally overrides any per-user
+  /// customization made via User Management; use with that in mind.
+  Future<void> reapplyQrAccessToAllVisitors(String buildingId) async {
+    final buildingDoc = await _firestore
+        .collection('buildings')
+        .doc(buildingId)
+        .get();
+    final data = buildingDoc.data();
+    final accessType = data?['qrFloorAccessType'] == 'selected'
+        ? FloorAccessType.selected
+        : FloorAccessType.all;
+    final floorNumbers = List<int>.from(data?['qrFloorNumbers'] ?? const []);
+
+    final accessSnap = await _firestore
+        .collection('buildings')
+        .doc(buildingId)
+        .collection('access')
+        .get();
+
+    final batch = _firestore.batch();
+    for (final doc in accessSnap.docs) {
+      final grant = UserFloorAccessModel(
+        userId: doc.id,
+        buildingId: buildingId,
+        accessType: accessType,
+        floorNumbers: floorNumbers,
+        updatedAt: DateTime.now(),
+        updatedBy: 'qr_resync',
+      );
+      batch.set(
+        _firestore
+            .collection('buildings')
+            .doc(buildingId)
+            .collection('userAccess')
+            .doc(doc.id),
+        grant.toJson(),
+      );
+    }
+    await batch.commit();
   }
 
   /// Get all buildings user has access to (as visitor)
@@ -387,5 +467,90 @@ class BuildingService {
     }
 
     return accessible;
+  }
+
+  /// Users who have scanned this building's QR code (the `access`
+  /// subcollection written by [grantAccess]), joined with their profile
+  /// doc so the admin's User Management screen can show a name/email.
+  /// Each map contains: userId, name, email, photoUrl, accessGrantedAt.
+  Future<List<Map<String, dynamic>>> getBuildingUsers(String buildingId) async {
+    final accessSnap = await _firestore
+        .collection('buildings')
+        .doc(buildingId)
+        .collection('access')
+        .get();
+
+    final results = <Map<String, dynamic>>[];
+    for (final doc in accessSnap.docs) {
+      final userId = doc.id;
+      final userDoc = await _firestore.collection('users').doc(userId).get();
+      final userData = userDoc.data();
+      results.add({
+        'userId': userId,
+        'name': userData?['name'] ?? 'Unnamed user',
+        'email': userData?['email'] ?? '',
+        'photoUrl': userData?['photoUrl'],
+        'accessGrantedAt': doc.data()['accessGrantedAt'],
+      });
+    }
+    return results;
+  }
+
+  // DOOR / ACCESS-POINT OPERATIONS
+
+  CollectionReference<Map<String, dynamic>> _doorsCol(
+    String buildingId,
+    String floorId,
+  ) => _firestore
+      .collection('buildings')
+      .doc(buildingId)
+      .collection('floors')
+      .doc(floorId)
+      .collection('doors');
+
+  Future<DoorModel> addDoor({
+    required String buildingId,
+    required String floorId,
+    required int row,
+    required int col,
+    String label = 'Door',
+    bool isAccessControlled = true,
+  }) async {
+    final doorId = 'dr_${_uuid.v4().substring(0, 8)}';
+    final door = DoorModel(
+      id: doorId,
+      buildingId: buildingId,
+      floorId: floorId,
+      gridPoint: GridPoint(row: row, col: col),
+      label: label,
+      isAccessControlled: isAccessControlled,
+      createdAt: DateTime.now(),
+    );
+    await _doorsCol(buildingId, floorId).doc(doorId).set(door.toJson());
+    return door;
+  }
+
+  Future<List<DoorModel>> getDoors(String buildingId, String floorId) async {
+    final snap = await _doorsCol(buildingId, floorId).get();
+    return snap.docs
+        .map((d) => DoorModel.fromJson(d.id, d.data()))
+        .toList();
+  }
+
+  Future<void> updateDoor(
+    String buildingId,
+    String floorId,
+    String doorId,
+    Map<String, dynamic> updates,
+  ) async {
+    await _doorsCol(buildingId, floorId).doc(doorId).update(updates);
+  }
+
+  Future<void> deleteDoor(
+    String buildingId,
+    String floorId,
+    String doorId,
+  ) async {
+    await _doorsCol(buildingId, floorId).doc(doorId).delete();
   }
 }
