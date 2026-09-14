@@ -159,117 +159,99 @@ class _NavigationScreenState extends State<NavigationScreen> {
     }
   }
 
-  // The full set of grid cells belonging to an off-limits room, keyed as
-  // row * width + col. Computed once the grid and room list are both
-  // available (see _computeOffLimitsCells).
-  Set<int> _offLimitsCellKeys = {};
-  // Bounding boxes of each off-limits room's flooded area, purely for
-  // drawing a visible boundary — see _buildOffLimitsOverlay.
+  // Bounding box of each off-limits room's admin-drawn area, in grid-cell
+  // units — used both to block navigation and to draw the visible
+  // boundary. Computed once the room list is available.
   List<Rect> _offLimitsBounds = [];
 
-  /// A RoomModel only stores one point (wherever the admin dropped the
-  /// pin) — it has no stored boundary. So "off-limits" can't just mean
-  /// "block a small radius around that point": a real room spans many
-  /// grid cells. Flood-fill outward from the pin across walkable cells to
-  /// find the room's actual extent — but wall data alone isn't a reliable
-  /// boundary, since an open doorway has no wall pixel there at all. So
-  /// this also treats every mapped door as a barrier: a doorway IS the
-  /// room's real edge even where the image shows an opening, and that's
-  /// exactly what a door marker represents. A distance cap is kept as a
-  /// second safety net — if a room has an unmapped doorway (no door
-  /// marker placed there), the flood would otherwise leak through it and
-  /// could shade the whole floor instead of just failing to cover one
-  /// room's far corner, which is a much smaller, more honest failure.
+  // A copy of _gridModel with every off-limits cell forced to wall value
+  // (1) — this is what pathfinding actually runs against. Rendering,
+  // scale math, and _isOffLimitsPoint all keep using the real _gridModel;
+  // only the A* search sees the modified one, so off-limits areas are a
+  // routing concern, not a rendering one. Kept separate from
+  // PathfindingService itself deliberately — it stays a generic grid
+  // walker with no idea what a "room" or "off-limits" is, which is
+  // correct: the grid it's given already has the walls it needs to
+  // route around, off-limits or otherwise.
+  GridModel? _pathfindingGrid;
+
+  /// Off-limits areas are drawn by the admin (see OffLimitsAreaScreen /
+  /// RoomModel.offLimitsMinRow etc.) and stored exactly as drawn — this
+  /// just reads that stored rectangle directly. Earlier versions tried to
+  /// infer a room's shape automatically (a fixed radius around the pin,
+  /// then a wall/door flood-fill), but a room's real boundary can't be
+  /// reliably reconstructed from wall-detection data alone, so both
+  /// either under- or over-blocked depending on how complete the wall/
+  /// door data happened to be. An admin-drawn rectangle has no such
+  /// ambiguity.
   void _computeOffLimitsCells() {
-    final grid = _gridModel;
-    if (grid == null) return;
-    final width = grid.width;
-    final height = grid.height;
-
-    final doorCellKeys = <int>{};
-    for (final door in widget.doors) {
-      final r = door.gridPoint.row;
-      final c = door.gridPoint.col;
-      if (r < 0 || r >= height || c < 0 || c >= width) continue;
-      doorCellKeys.add(r * width + c);
-    }
-    bool isBarrier(int row, int col) =>
-        grid.grid[row][col] == 1 || doorCellKeys.contains(row * width + col);
-
-    // Cap in cells-from-seed, not total cell count, so the cap scales
-    // sensibly with room shape (a long thin room vs. a square one)
-    // instead of an arbitrary total that varies wildly with layout.
-    const maxRadiusCells = 40;
-
-    final visited = <int>{};
     final bounds = <Rect>[];
-
     for (final room in widget.rooms) {
-      if (!room.isOffLimits) continue;
-      final startRow = room.gridPoint.row;
-      final startCol = room.gridPoint.col;
-      if (startRow < 0 || startRow >= height || startCol < 0 || startCol >= width) {
-        continue;
-      }
-      final startKey = startRow * width + startCol;
-      if (visited.contains(startKey)) continue;
-
-      final queue = <GridPoint>[room.gridPoint];
-      final roomCells = <int>{startKey};
-      int minRow = startRow, maxRow = startRow, minCol = startCol, maxCol = startCol;
-      bool hitCap = false;
-
-      while (queue.isNotEmpty) {
-        final cur = queue.removeLast();
-        for (final d in const [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
-          final nr = cur.row + d[0];
-          final nc = cur.col + d[1];
-          if (nr < 0 || nr >= height || nc < 0 || nc >= width) continue;
-          if ((nr - startRow).abs() > maxRadiusCells ||
-              (nc - startCol).abs() > maxRadiusCells) {
-            hitCap = true;
-            continue;
-          }
-          final key = nr * width + nc;
-          if (roomCells.contains(key)) continue;
-          if (isBarrier(nr, nc)) continue;
-          roomCells.add(key);
-          queue.add(GridPoint(row: nr, col: nc));
-          if (nr < minRow) minRow = nr;
-          if (nr > maxRow) maxRow = nr;
-          if (nc < minCol) minCol = nc;
-          if (nc > maxCol) maxCol = nc;
-        }
-      }
-
-      if (hitCap) {
-        debugPrint(
-          'Off-limits room "${room.name}" flood-fill hit its distance cap — '
-          'it likely has a doorway with no door marker placed on it, so '
-          'the blocked area may not cover the whole room. Map a door on '
-          'every opening of this room to fix it precisely.',
-        );
-      }
-
-      visited.addAll(roomCells);
+      if (!room.isOffLimits || !room.hasOffLimitsArea) continue;
       bounds.add(
         Rect.fromLTRB(
-          minCol.toDouble(),
-          minRow.toDouble(),
-          (maxCol + 1).toDouble(),
-          (maxRow + 1).toDouble(),
+          room.offLimitsMinCol!.toDouble(),
+          room.offLimitsMinRow!.toDouble(),
+          (room.offLimitsMaxCol! + 1).toDouble(),
+          (room.offLimitsMaxRow! + 1).toDouble(),
         ),
       );
+      if (room.isOffLimits && !room.hasOffLimitsArea) {
+        debugPrint(
+          'Room "${room.name}" is marked off-limits but has no drawn area '
+          'yet — it currently blocks nothing. Open it in Room Mapping and '
+          'use "Define Off-Limits Area" to fix this.',
+        );
+      }
     }
-
-    _offLimitsCellKeys = visited;
     _offLimitsBounds = bounds;
+    _pathfindingGrid = _buildPathfindingGrid();
+  }
+
+  /// A* has no idea what an off-limits room is, and shouldn't need to —
+  /// it just walks a grid of walls. So off-limits enforcement for routing
+  /// is done by handing it a grid where those cells already read as
+  /// walls, rather than teaching the pathfinder a new concept. This is a
+  /// distinct problem from _isOffLimitsPoint: that stops someone from
+  /// choosing an off-limits room as an endpoint; this stops a route
+  /// between two perfectly legitimate points from being drawn through one
+  /// on the way.
+  GridModel _buildPathfindingGrid() {
+    final base = _gridModel!;
+    final walled = List<List<int>>.generate(
+      base.height,
+      (r) => List<int>.from(base.grid[r]),
+    );
+    for (final bound in _offLimitsBounds) {
+      final minRow = bound.top.toInt().clamp(0, base.height - 1);
+      final maxRow = (bound.bottom.toInt() - 1).clamp(0, base.height - 1);
+      final minCol = bound.left.toInt().clamp(0, base.width - 1);
+      final maxCol = (bound.right.toInt() - 1).clamp(0, base.width - 1);
+      for (var r = minRow; r <= maxRow; r++) {
+        for (var c = minCol; c <= maxCol; c++) {
+          walled[r][c] = 1;
+        }
+      }
+    }
+    return GridModel(
+      grid: walled,
+      width: base.width,
+      height: base.height,
+      cellSize: base.cellSize,
+      metadata: base.metadata,
+    );
   }
 
   bool _isOffLimitsPoint(GridPoint pt) {
-    final grid = _gridModel;
-    if (grid == null) return false;
-    return _offLimitsCellKeys.contains(pt.row * grid.width + pt.col);
+    for (final bound in _offLimitsBounds) {
+      if (pt.col >= bound.left &&
+          pt.col < bound.right &&
+          pt.row >= bound.top &&
+          pt.row < bound.bottom) {
+        return true;
+      }
+    }
+    return false;
   }
 
   void _calculateImageBounds() {
@@ -354,13 +336,17 @@ class _NavigationScreenState extends State<NavigationScreen> {
 
   Future<void> _calculateRoute() async {
     if (_gridModel == null || _startPoint == null || _endPoint == null) return;
+    // Each tap can trigger its own calculation — clear any snackbar left
+    // over from a previous attempt so a stale "No path found" can't queue
+    // up and outlive a route that was actually found a moment later.
+    if (mounted) ScaffoldMessenger.of(context).clearSnackBars();
     setState(() {
       _isCalculating = true;
       _route = null;
     });
     try {
       final route = await _pathfindingService.findPath(
-        gridModel: _gridModel!,
+        gridModel: _pathfindingGrid ?? _gridModel!,
         start: _startPoint!,
         end: _endPoint!,
         cellSize: _gridModel!.cellSize,

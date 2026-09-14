@@ -8,6 +8,7 @@ import 'package:planova_mobile/models/grid_model.dart';
 import 'package:planova_mobile/models/door_model.dart';
 import 'package:planova_mobile/services/building_service.dart';
 import 'package:planova_mobile/services/mock_storage_service.dart';
+import 'package:planova_mobile/screens/off_limits_area_screen.dart';
 import 'package:planova_mobile/theme/app_theme.dart';
 
 /// Icons an admin can drag onto the floorplan canvas. Kept separate from
@@ -498,7 +499,39 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
       return;
     }
 
-    await _setRoomOffLimits(nearest, !nearest.isOffLimits);
+    if (nearest.isOffLimits) {
+      // Turning it off doesn't need the drawing screen — just clear the flag.
+      await _setRoomOffLimits(nearest, false);
+    } else {
+      await _openOffLimitsAreaEditor(nearest);
+    }
+  }
+
+  /// Opens the screen where the admin draws the room's off-limits
+  /// rectangle directly on the floorplan. This is the only place that
+  /// sets isOffLimits to true — it always goes together with drawing the
+  /// actual area, so a room can never end up "off-limits" with no shape
+  /// behind it (which is what let a tap slip through a still-open
+  /// doorway or a too-small inferred radius in earlier attempts at this).
+  Future<void> _openOffLimitsAreaEditor(RoomModel room) async {
+    final saved = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => OffLimitsAreaScreen(
+          building: widget.building,
+          floor: widget.floor,
+          room: room,
+        ),
+      ),
+    );
+    if (saved == true) {
+      HapticFeedback.mediumImpact();
+      _snack(
+        '"${room.name}" marked Off-Limits',
+        color: AppTheme.colors(context).warning,
+      );
+      _loadData();
+    }
   }
 
   Future<void> _setRoomOffLimits(
@@ -936,7 +969,11 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
             GestureDetector(
               onTap: () {
                 Navigator.pop(context);
-                _setRoomOffLimits(room, !room.isOffLimits);
+                if (room.isOffLimits) {
+                  _setRoomOffLimits(room, false);
+                } else {
+                  _openOffLimitsAreaEditor(room);
+                }
               },
               child: Container(
                 height: 54,
@@ -973,6 +1010,42 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
                 ),
               ),
             ),
+
+            if (room.isOffLimits)
+              GestureDetector(
+                onTap: () {
+                  Navigator.pop(context);
+                  _openOffLimitsAreaEditor(room);
+                },
+                child: Container(
+                  height: 46,
+                  width: double.infinity,
+                  margin: const EdgeInsets.only(bottom: 12),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(AppRadius.md),
+                    border: Border.all(color: c.border, width: 1.5),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.crop_free_rounded,
+                        color: c.onSurfaceSecondary,
+                        size: 18,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        room.hasOffLimitsArea
+                            ? 'Adjust Off-Limits Area'
+                            : 'Define Off-Limits Area',
+                        style: tt.labelMedium?.copyWith(
+                          color: c.onSurfaceSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
 
             // Delete button
             GestureDetector(
