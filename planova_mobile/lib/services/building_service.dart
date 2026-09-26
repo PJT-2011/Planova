@@ -4,11 +4,15 @@ import 'package:planova_mobile/models/floor_model.dart';
 import 'package:planova_mobile/models/room_model.dart';
 import 'package:planova_mobile/models/grid_model.dart';
 import 'package:planova_mobile/models/door_model.dart';
+import 'package:planova_mobile/models/safety_marking_model.dart';
 import 'package:planova_mobile/models/floor_access_model.dart';
+import 'package:planova_mobile/models/access_request_model.dart';
+import 'package:planova_mobile/services/notification_service.dart';
 import 'package:uuid/uuid.dart';
 
 class BuildingService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final NotificationService _notifications = NotificationService();
   final Uuid _uuid = const Uuid();
 
   // BUILDING OPERATIONS
@@ -336,62 +340,73 @@ class BuildingService {
 
   }
 
-  // VISITOR ACCESS
+  // VISITOR ACCESS — legacy pending/approved/rejected doc
+  //
+  // Scanning the QR code used to write directly to
+  // buildings/{buildingId}/access/{userId} and be approved/rejected right
+  // here in BuildingService. That's been superseded by
+  // AccessControlService.submitBuildingAccessRequest /  approveRequest /
+  // rejectRequest, which puts QR requests in the SAME accessRequests
+  // collection (and therefore the same admin Pending-tab UI) as manual
+  // per-floor requests, instead of a separate collection only
+  // UserManagementScreen ever looked at.
+  //
+  // What's left here is read-only backward compatibility: any `access`
+  // doc approved before this change still counts as valid access forever
+  // (nothing new ever creates one), and reapplyQrAccessToAllVisitors below
+  // still re-syncs floor permissions for those legacy holdouts if an
+  // admin tightens the QR config later.
 
-  /// Grant visitor access to building. If this is the first time this user
-  /// has been granted access to this building, this also seeds their
-  /// permanent floor access from the building's currently configured QR
-  /// floor permissions — this is what actually makes "scan QR -> only get
-  /// the floors the admin picked" work, rather than a QR scan silently
-  /// defaulting everyone to unrestricted access. If the user already has a
-  /// userAccess doc (an admin has since customized it, or this isn't their
-  /// first scan), it's left untouched — a manual admin change always wins
-  /// over whatever the QR happened to be configured as at scan time.
-  Future<void> grantAccess(String buildingId, String userId) async {
-    await _firestore
+  CollectionReference<Map<String, dynamic>> _accessCol(String buildingId) =>
+      _firestore.collection('buildings').doc(buildingId).collection('access');
+
+  String _statusOf(Map<String, dynamic>? data) =>
+      (data?['status'] as String?) ?? 'approved';
+
+  /// Current access status for this user on this building, checking both
+  /// the current system (a QR-originated AccessRequestModel) and the
+  /// legacy `access` doc, in that order. Returns one of 'pending' /
+  /// 'approved' / 'rejected', or null if the user has never scanned this
+  /// building's QR code under either system.
+  ///
+  /// An approved-but-lapsed grant (expired naturally, or revoked by an
+  /// admin — see AccessControlService.revokeAccess) is reported back as
+  /// 'rejected' rather than 'approved', since every caller of this method
+  /// only ever wants to know "can they get in right now."
+  Future<String?> getAccessStatus(String buildingId, String userId) async {
+    final qrSnap = await _firestore
         .collection('buildings')
         .doc(buildingId)
-        .collection('access')
-        .doc(userId)
-        .set({
-          'role': 'visitor',
-          'accessGrantedAt': FieldValue.serverTimestamp(),
-          'expiresAt': null,
-        });
-
-    final userAccessRef = _firestore
-        .collection('buildings')
-        .doc(buildingId)
-        .collection('userAccess')
-        .doc(userId);
-    final existing = await userAccessRef.get();
-    if (existing.exists) return;
-
-    final buildingDoc = await _firestore
-        .collection('buildings')
-        .doc(buildingId)
+        .collection('accessRequests')
+        .where('userId', isEqualTo: userId)
+        .where('isQrRequest', isEqualTo: true)
+        .limit(1)
         .get();
-    final data = buildingDoc.data();
-    final accessType = data?['qrFloorAccessType'] == 'selected'
-        ? FloorAccessType.selected
-        : FloorAccessType.all;
-    final floorNumbers = List<int>.from(data?['qrFloorNumbers'] ?? const []);
+    if (qrSnap.docs.isNotEmpty) {
+      final request = AccessRequestModel.fromJson(
+        qrSnap.docs.first.id,
+        qrSnap.docs.first.data(),
+      );
+      switch (request.status) {
+        case AccessRequestStatus.pending:
+          return 'pending';
+        case AccessRequestStatus.approved:
+          return request.isActiveGrant ? 'approved' : 'rejected';
+        case AccessRequestStatus.rejected:
+        case AccessRequestStatus.expired:
+          return 'rejected';
+      }
+    }
 
-    final grant = UserFloorAccessModel(
-      userId: userId,
-      buildingId: buildingId,
-      accessType: accessType,
-      floorNumbers: floorNumbers,
-      updatedAt: DateTime.now(),
-      updatedBy: 'qr_scan',
-    );
-    await userAccessRef.set(grant.toJson());
+    final doc = await _accessCol(buildingId).doc(userId).get();
+    if (!doc.exists) return null;
+    return _statusOf(doc.data());
   }
 
   /// Save which floors this building's QR code grants access to. Applies
-  /// to every future scan immediately; existing visitors keep whatever
-  /// access they already have unless [reapplyQrAccessToAllVisitors] is
-  /// also called.
+  /// to every future approval immediately; already-approved visitors keep
+  /// whatever access they already have unless [reapplyQrAccessToAllVisitors]
+  /// is also called.
   Future<void> updateQRFloorAccess({
     required String buildingId,
     required FloorAccessType accessType,
@@ -403,11 +418,12 @@ class BuildingService {
     });
   }
 
-  /// Overwrites every existing visitor's permanent floor access with the
-  /// building's current QR floor configuration — for an admin who's
-  /// tightening a QR code after people have already scanned the old,
-  /// unrestricted version. This intentionally overrides any per-user
-  /// customization made via User Management; use with that in mind.
+  /// Overwrites every currently-approved visitor's permanent floor access
+  /// with the building's current QR floor configuration — for an admin
+  /// who's tightening a QR code after people have already been approved
+  /// under a looser one. Pending and rejected requests are left untouched.
+  /// This intentionally overrides any per-user customization made via User
+  /// Management; use with that in mind.
   Future<void> reapplyQrAccessToAllVisitors(String buildingId) async {
     final buildingDoc = await _firestore
         .collection('buildings')
@@ -419,14 +435,15 @@ class BuildingService {
         : FloorAccessType.all;
     final floorNumbers = List<int>.from(data?['qrFloorNumbers'] ?? const []);
 
-    final accessSnap = await _firestore
-        .collection('buildings')
-        .doc(buildingId)
-        .collection('access')
-        .get();
+    final accessSnap = await _accessCol(buildingId).get();
 
     final batch = _firestore.batch();
     for (final doc in accessSnap.docs) {
+      // Filtered in Dart, not via a Firestore `where`, because legacy docs
+      // have no `status` field at all and a query would silently exclude
+      // them — _statusOf treats that same absence as 'approved'.
+      if (_statusOf(doc.data()) != 'approved') continue;
+
       final grant = UserFloorAccessModel(
         userId: doc.id,
         buildingId: buildingId,
@@ -447,53 +464,47 @@ class BuildingService {
     await batch.commit();
   }
 
-  /// Get all buildings user has access to (as visitor)
+  /// Get all buildings the user currently has active access to — checking
+  /// both the current system (an approved-and-active QR AccessRequestModel)
+  /// and the legacy `access` doc, so nothing that used to work stops
+  /// working. Pending and rejected requests never show up here — this is
+  /// the one place that decides "has this person actually gotten in."
   Future<List<BuildingModel>> getAccessibleBuildings(String userId) async {
     final buildingsSnapshot = await _firestore.collection('buildings').get();
 
     final List<BuildingModel> accessible = [];
 
     for (final buildingDoc in buildingsSnapshot.docs) {
-      final accessDoc = await buildingDoc.reference
+      final buildingId = buildingDoc.id;
+
+      final qrSnap = await buildingDoc.reference
+          .collection('accessRequests')
+          .where('userId', isEqualTo: userId)
+          .where('isQrRequest', isEqualTo: true)
+          .where('status', isEqualTo: 'approved')
+          .limit(1)
+          .get();
+      final qrApproved = qrSnap.docs.isNotEmpty &&
+          AccessRequestModel.fromJson(
+            qrSnap.docs.first.id,
+            qrSnap.docs.first.data(),
+          ).isActiveGrant;
+
+      final legacyDoc = await buildingDoc.reference
           .collection('access')
           .doc(userId)
           .get();
+      final legacyApproved =
+          legacyDoc.exists && _statusOf(legacyDoc.data()) == 'approved';
 
-      if (accessDoc.exists) {
+      if (qrApproved || legacyApproved) {
         accessible.add(
-          BuildingModel.fromJson(buildingDoc.id, buildingDoc.data()),
+          BuildingModel.fromJson(buildingId, buildingDoc.data()),
         );
       }
     }
 
     return accessible;
-  }
-
-  /// Users who have scanned this building's QR code (the `access`
-  /// subcollection written by [grantAccess]), joined with their profile
-  /// doc so the admin's User Management screen can show a name/email.
-  /// Each map contains: userId, name, email, photoUrl, accessGrantedAt.
-  Future<List<Map<String, dynamic>>> getBuildingUsers(String buildingId) async {
-    final accessSnap = await _firestore
-        .collection('buildings')
-        .doc(buildingId)
-        .collection('access')
-        .get();
-
-    final results = <Map<String, dynamic>>[];
-    for (final doc in accessSnap.docs) {
-      final userId = doc.id;
-      final userDoc = await _firestore.collection('users').doc(userId).get();
-      final userData = userDoc.data();
-      results.add({
-        'userId': userId,
-        'name': userData?['name'] ?? 'Unnamed user',
-        'email': userData?['email'] ?? '',
-        'photoUrl': userData?['photoUrl'],
-        'accessGrantedAt': doc.data()['accessGrantedAt'],
-      });
-    }
-    return results;
   }
 
   // DOOR / ACCESS-POINT OPERATIONS
@@ -552,5 +563,98 @@ class BuildingService {
     String doorId,
   ) async {
     await _doorsCol(buildingId, floorId).doc(doorId).delete();
+  }
+
+  // SAFETY / FACILITY MARKING OPERATIONS
+  //
+  // Same shape as doors above — a small collection of admin-placed,
+  // draggable, purely-informational markers per floor. Kept as a distinct
+  // subcollection (rather than folded into doors) because markings carry a
+  // [SafetyMarkingType] and an optional custom label instead of a single
+  // fixed meaning.
+
+  CollectionReference<Map<String, dynamic>> _safetyMarkingsCol(
+    String buildingId,
+    String floorId,
+  ) => _firestore
+      .collection('buildings')
+      .doc(buildingId)
+      .collection('floors')
+      .doc(floorId)
+      .collection('safetyMarkers');
+
+  Future<SafetyMarkingModel> addSafetyMarking({
+    required String buildingId,
+    required String floorId,
+    required int row,
+    required int col,
+    required SafetyMarkingType type,
+    String? customLabel,
+  }) async {
+    final markingId = 'mk_${_uuid.v4().substring(0, 8)}';
+    final marking = SafetyMarkingModel(
+      id: markingId,
+      buildingId: buildingId,
+      floorId: floorId,
+      gridPoint: GridPoint(row: row, col: col),
+      type: type,
+      customLabel: customLabel,
+      createdAt: DateTime.now(),
+    );
+    await _safetyMarkingsCol(
+      buildingId,
+      floorId,
+    ).doc(markingId).set(marking.toJson());
+    return marking;
+  }
+
+  Future<List<SafetyMarkingModel>> getSafetyMarkings(
+    String buildingId,
+    String floorId,
+  ) async {
+    final snap = await _safetyMarkingsCol(buildingId, floorId).get();
+    return snap.docs
+        .map((d) => SafetyMarkingModel.fromJson(d.id, d.data()))
+        .toList();
+  }
+
+  Future<void> updateSafetyMarking(
+    String buildingId,
+    String floorId,
+    String markingId,
+    Map<String, dynamic> updates,
+  ) async {
+    await _safetyMarkingsCol(buildingId, floorId).doc(markingId).update(updates);
+  }
+
+  Future<void> deleteSafetyMarking(
+    String buildingId,
+    String floorId,
+    String markingId,
+  ) async {
+    await _safetyMarkingsCol(buildingId, floorId).doc(markingId).delete();
+  }
+
+  /// Legacy 'approved' access docs from before the QR flow moved onto
+  /// AccessRequestModel/accessRequests — used only so User Management can
+  /// still show people who were approved under the old system. Nothing
+  /// new is ever written to this collection anymore.
+  Future<List<Map<String, dynamic>>> getLegacyApprovedUsers(
+    String buildingId,
+  ) async {
+    final snap = await _accessCol(buildingId).get();
+    final results = <Map<String, dynamic>>[];
+    for (final doc in snap.docs) {
+      final data = doc.data();
+      if (_statusOf(data) != 'approved') continue;
+      final userId = doc.id;
+      final userDoc = await _firestore.collection('users').doc(userId).get();
+      final userData = userDoc.data();
+      results.add({
+        'userId': userId,
+        'name': userData?['name'] ?? data['userName'] ?? 'Unnamed user',
+      });
+    }
+    return results;
   }
 }

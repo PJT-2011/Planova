@@ -136,25 +136,51 @@ class AccessControlService {
     return activeTemp != null;
   }
 
-  /// Returns the approved+still-valid request granting temp access to this
-  /// floor, if any. Lazily expires lapsed grants along the way.
+  /// Returns the approved+still-valid request granting access to this
+  /// floor, if any — checking three ways a request can cover it:
+  /// an exact single-floor match (the original manual per-floor request
+  /// flow), a whole-building QR grant, or a QR grant scoped to a specific
+  /// set of floors that happens to include this one. Lazily expires
+  /// lapsed grants along the way, in all three cases.
   Future<AccessRequestModel?> getActiveTemporaryAccess({
     required String buildingId,
     required String userId,
     required int floorNumber,
   }) async {
-    final snap = await _requestsCol(buildingId)
-        .where('userId', isEqualTo: userId)
-        .where('floorNumber', isEqualTo: floorNumber)
-        .where('status', isEqualTo: 'approved')
-        .get();
-
-    for (final doc in snap.docs) {
-      final req = AccessRequestModel.fromJson(doc.id, doc.data());
-      if (req.isActiveTemporaryAccess) return req;
-      if (req.isLapsedButNotMarked) await _expireRequest(req);
+    Future<AccessRequestModel?> firstActive(
+      Query<Map<String, dynamic>> query,
+    ) async {
+      final snap = await query.get();
+      for (final doc in snap.docs) {
+        final req = AccessRequestModel.fromJson(doc.id, doc.data());
+        if (req.isActiveGrant) return req;
+        if (req.isLapsedButNotMarked) await _expireRequest(req);
+      }
+      return null;
     }
-    return null;
+
+    final exact = await firstActive(
+      _requestsCol(buildingId)
+          .where('userId', isEqualTo: userId)
+          .where('floorNumber', isEqualTo: floorNumber)
+          .where('status', isEqualTo: 'approved'),
+    );
+    if (exact != null) return exact;
+
+    final wholeBuilding = await firstActive(
+      _requestsCol(buildingId)
+          .where('userId', isEqualTo: userId)
+          .where('isWholeBuilding', isEqualTo: true)
+          .where('status', isEqualTo: 'approved'),
+    );
+    if (wholeBuilding != null) return wholeBuilding;
+
+    return firstActive(
+      _requestsCol(buildingId)
+          .where('userId', isEqualTo: userId)
+          .where('floorNumbers', arrayContains: floorNumber)
+          .where('status', isEqualTo: 'approved'),
+    );
   }
 
   // ---------------------------------------------------------------------
@@ -213,6 +239,106 @@ class AccessControlService {
     return request;
   }
 
+  /// Submitted on scanning the building's entrance QR code. Unlike
+  /// [submitRequest] (a manual, single-floor, reason-based ask), this
+  /// derives its scope directly from the building's current QR
+  /// configuration — [BuildingModel.qrFloorAccessType] /
+  /// [BuildingModel.qrFloorNumbers] — so "entire building" vs "these
+  /// floors" is decided by however the admin has the QR set up, not by
+  /// anything the scanning user chooses.
+  ///
+  /// Idempotent per user per building: a rescan (or reopening a Recent
+  /// building) reports back whatever request already exists rather than
+  /// creating a second one — so a pending request doesn't get duplicated,
+  /// and an approved/rejected one doesn't get reset back to pending.
+  Future<AccessRequestModel> submitBuildingAccessRequest({
+    required String buildingId,
+    required String buildingName,
+    required String userId,
+    required String userName,
+  }) async {
+    final existingSnap = await _requestsCol(buildingId)
+        .where('userId', isEqualTo: userId)
+        .where('isQrRequest', isEqualTo: true)
+        .limit(1)
+        .get();
+    if (existingSnap.docs.isNotEmpty) {
+      final doc = existingSnap.docs.first;
+      return AccessRequestModel.fromJson(doc.id, doc.data());
+    }
+
+    final buildingDoc = await _firestore
+        .collection('buildings')
+        .doc(buildingId)
+        .get();
+    final data = buildingDoc.data();
+    final isWholeBuilding = data?['qrFloorAccessType'] != 'selected';
+    final qrFloors = List<int>.from(data?['qrFloorNumbers'] ?? const []);
+    final scopeLabel = isWholeBuilding
+        ? 'Entire Building'
+        : (qrFloors.isEmpty ? 'Entire Building' : 'Floors ${qrFloors.join(', ')}');
+
+    final docRef = _requestsCol(buildingId).doc();
+    final request = AccessRequestModel(
+      id: docRef.id,
+      buildingId: buildingId,
+      buildingName: buildingName,
+      floorId: '',
+      floorNumber: -1,
+      floorName: scopeLabel,
+      userId: userId,
+      userName: userName,
+      reason: '',
+      status: AccessRequestStatus.pending,
+      requestedAt: DateTime.now(),
+      isQrRequest: true,
+      isWholeBuilding: isWholeBuilding,
+      floorNumbers: isWholeBuilding ? const [] : qrFloors,
+    );
+    await docRef.set(request.toJson());
+
+    await _logAudit(
+      buildingId: buildingId,
+      floorId: '',
+      floorNumber: -1,
+      floorName: scopeLabel,
+      userId: userId,
+      userName: userName,
+      action: 'requested',
+      performedBy: userId,
+      performedByName: userName,
+    );
+
+    final adminId = data?['createdBy'] as String?;
+    if (adminId != null && adminId.isNotEmpty) {
+      await _notifications.notifyRequestSubmitted(
+        adminId: adminId,
+        request: request,
+      );
+    }
+
+    return request;
+  }
+
+  /// Current status of this user's QR-originated request for this
+  /// building, or null if they've never scanned it. A revoked (status
+  /// 'expired') grant is reported back as-is rather than folded into
+  /// 'rejected' — callers that only care about "can they get in right
+  /// now" should check [AccessRequestModel.isActiveGrant] instead of the
+  /// raw status.
+  Future<AccessRequestModel?> getQrRequestStatus(
+    String buildingId,
+    String userId,
+  ) async {
+    final snap = await _requestsCol(buildingId)
+        .where('userId', isEqualTo: userId)
+        .where('isQrRequest', isEqualTo: true)
+        .limit(1)
+        .get();
+    if (snap.docs.isEmpty) return null;
+    return AccessRequestModel.fromJson(snap.docs.first.id, snap.docs.first.data());
+  }
+
   Stream<List<AccessRequestModel>> watchRequestsForUser(
     String buildingId,
     String userId,
@@ -254,21 +380,50 @@ class AccessControlService {
         );
   }
 
+  /// Every approved request whose grant is still active right now — the
+  /// Users screen's data source. Filtered client-side by [isActiveGrant]
+  /// (rather than trusting the stored 'approved' status alone) so a grant
+  /// that just lapsed disappears from the list immediately rather than
+  /// waiting for the next [sweepExpired] pass to flip its status.
+  Stream<List<AccessRequestModel>> watchActiveGrants(String buildingId) {
+    return _requestsCol(buildingId)
+        .where('status', isEqualTo: 'approved')
+        .snapshots()
+        .map(
+          (snap) => snap.docs
+              .map((d) => AccessRequestModel.fromJson(d.id, d.data()))
+              .where((r) => r.isActiveGrant)
+              .toList(),
+        );
+  }
+
+  /// [durationMinutes] null means permanent access (no expiry) — used for
+  /// the "Permanent" option in the admin's approve sheet, in addition to
+  /// the existing fixed-minute choices.
   Future<void> approveRequest({
     required AccessRequestModel request,
-    required int durationMinutes,
+    required int? durationMinutes,
     required String adminId,
     required String adminName,
   }) async {
-    final expiresAt = DateTime.now().add(Duration(minutes: durationMinutes));
+    final expiresAt = durationMinutes == null
+        ? null
+        : DateTime.now().add(Duration(minutes: durationMinutes));
     await _requestsCol(request.buildingId).doc(request.id).update({
       'status': 'approved',
       'respondedAt': Timestamp.fromDate(DateTime.now()),
       'respondedBy': adminId,
       'respondedByName': adminName,
       'durationMinutes': durationMinutes,
-      'expiresAt': Timestamp.fromDate(expiresAt),
+      'expiresAt': expiresAt != null ? Timestamp.fromDate(expiresAt) : null,
     });
+
+    final approved = request.copyWith(
+      status: AccessRequestStatus.approved,
+      durationMinutes: durationMinutes,
+      expiresAt: expiresAt,
+      clearExpiry: durationMinutes == null,
+    );
 
     await _logAudit(
       buildingId: request.buildingId,
@@ -284,13 +439,7 @@ class AccessControlService {
       expiresAt: expiresAt,
     );
 
-    await _notifications.notifyRequestApproved(
-      request: request.copyWith(
-        status: AccessRequestStatus.approved,
-        durationMinutes: durationMinutes,
-        expiresAt: expiresAt,
-      ),
-    );
+    await _notifications.notifyRequestApproved(request: approved);
   }
 
   Future<void> rejectRequest({
@@ -318,6 +467,41 @@ class AccessControlService {
     );
 
     await _notifications.notifyRequestRejected(request: request);
+  }
+
+  /// Admin-initiated immediate revocation of an active approved grant —
+  /// e.g. the user is no longer authorized, or the area they were granted
+  /// access to has just been marked off-limits. Forces the request's
+  /// window to end right now, so isActiveTemporaryAccess flips to false
+  /// everywhere it's checked, rather than waiting for the lazy-expiry
+  /// sweep to notice.
+  Future<void> revokeAccess({
+    required AccessRequestModel request,
+    required String adminId,
+    required String adminName,
+    String reason = 'Revoked by administrator',
+  }) async {
+    final now = DateTime.now();
+    await _requestsCol(request.buildingId).doc(request.id).update({
+      'status': 'expired',
+      'expiresAt': Timestamp.fromDate(now),
+    });
+
+    await _logAudit(
+      buildingId: request.buildingId,
+      floorId: request.floorId,
+      floorNumber: request.floorNumber,
+      floorName: request.floorName,
+      userId: request.userId,
+      userName: request.userName,
+      action: 'revoked',
+      performedBy: adminId,
+      performedByName: adminName,
+      reason: reason,
+      expiresAt: now,
+    );
+
+    await _notifications.notifyAccessRevoked(request: request);
   }
 
   Future<void> _expireRequest(AccessRequestModel request) async {

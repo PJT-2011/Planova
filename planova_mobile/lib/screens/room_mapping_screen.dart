@@ -6,16 +6,19 @@ import 'package:planova_mobile/models/floor_model.dart';
 import 'package:planova_mobile/models/room_model.dart';
 import 'package:planova_mobile/models/grid_model.dart';
 import 'package:planova_mobile/models/door_model.dart';
+import 'package:planova_mobile/models/safety_marking_model.dart';
 import 'package:planova_mobile/services/building_service.dart';
 import 'package:planova_mobile/services/mock_storage_service.dart';
 import 'package:planova_mobile/screens/off_limits_area_screen.dart';
+import 'package:planova_mobile/widgets/safety_marking_legend.dart';
 import 'package:planova_mobile/theme/app_theme.dart';
 
 /// Icons an admin can drag onto the floorplan canvas. Kept separate from
-/// [RoomModel] / [DoorModel] because it only describes intent while a drag
-/// is in flight — the drop handler turns it into a real door or an
-/// off-limits toggle on the nearest room.
-enum _PaletteIcon { door, offLimits }
+/// [RoomModel] / [DoorModel] / [SafetyMarkingModel] because it only
+/// describes intent while a drag is in flight — the drop handler turns it
+/// into a real door, an off-limits toggle on the nearest room, or (after
+/// picking a type) a new safety marking.
+enum _PaletteIcon { door, offLimits, safetyMarking }
 
 class RoomMappingScreen extends StatefulWidget {
   final BuildingModel building;
@@ -46,9 +49,14 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
   GridModel? _gridModel;
   List<RoomModel> _rooms = [];
   List<DoorModel> _doors = [];
+  List<SafetyMarkingModel> _markings = [];
   bool _isLoading = true;
 
-  // State while a placed door marker is being dragged to a new spot.
+  // State while a placed door or safety-marking marker is being dragged to
+  // a new spot. Only one marker is ever dragged at a time, so both marker
+  // kinds share the same preview/global-position fields below —
+  // _draggingDoorId / _draggingMarkingId just say which one (if either) is
+  // currently active.
   // _dragPreviewLocalPosition is in the *content* coordinate space (the
   // same space _getScreenX/_getScreenY use — i.e. inside the InteractiveViewer's
   // transformed child), so it can be used directly to position the marker.
@@ -56,6 +64,7 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
   // the final drop reuses the exact same global->grid conversion as every
   // other drag-and-drop action instead of re-deriving it from the preview.
   String? _draggingDoorId;
+  String? _draggingMarkingId;
   Offset? _dragPreviewLocalPosition;
   Offset? _dragLastGlobalPosition;
 
@@ -111,6 +120,17 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
       if (mounted) setState(() => _doors = doors);
     } catch (e) {
       debugPrint('Room mapping: failed to load doors — $e');
+    }
+
+    // Same defensive loading for safety markings.
+    try {
+      final markings = await _buildingService.getSafetyMarkings(
+        widget.building.id,
+        widget.floor.id,
+      );
+      if (mounted) setState(() => _markings = markings);
+    } catch (e) {
+      debugPrint('Room mapping: failed to load safety markings — $e');
     }
   }
 
@@ -450,6 +470,9 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
       case _PaletteIcon.offLimits:
         await _markNearestRoomOffLimits(grid);
         break;
+      case _PaletteIcon.safetyMarking:
+        await _showMarkingTypePicker(grid);
+        break;
     }
   }
 
@@ -721,6 +744,391 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
   }
 
   // Delete room — bottom sheet
+
+  // Safety markings — type picker, placement, drag-to-reposition, removal
+
+  /// Bottom sheet letting the admin pick which kind of safety/facility
+  /// marker to drop at [grid]. Placement is a two-step drag: the palette
+  /// icon only carries "a marking is being placed here" — the type is
+  /// chosen afterwards so a single palette button covers every type
+  /// instead of needing one drag-source per type.
+  Future<void> _showMarkingTypePicker(GridPoint grid) async {
+    final c = AppTheme.colors(context);
+    final tt = Theme.of(context).textTheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    final selected = await showModalBottomSheet<SafetyMarkingType>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => Container(
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF1C2942) : Colors.white,
+          borderRadius: BorderRadius.circular(AppRadius.xl),
+          border: isDark
+              ? Border.all(color: Colors.white.withValues(alpha: 0.10))
+              : null,
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Place Safety Marking',
+              style: tt.headlineSmall?.copyWith(
+                color: c.onSurface,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Choose what this marker represents',
+              style: tt.bodySmall?.copyWith(color: c.onSurfaceSecondary),
+            ),
+            const SizedBox(height: 18),
+            Wrap(
+              spacing: 14,
+              runSpacing: 16,
+              children: SafetyMarkingType.values.map((type) {
+                final style = styleForMarking(type);
+                return GestureDetector(
+                  onTap: () => Navigator.pop(context, type),
+                  child: SizedBox(
+                    width: 74,
+                    child: Column(
+                      children: [
+                        Container(
+                          width: 52,
+                          height: 52,
+                          decoration: BoxDecoration(
+                            color: style.color.withValues(alpha: 0.14),
+                            borderRadius: BorderRadius.circular(AppRadius.sm),
+                            border: Border.all(
+                              color: style.color.withValues(alpha: 0.35),
+                            ),
+                          ),
+                          child: Icon(style.icon, color: style.color, size: 26),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          type.defaultLabel,
+                          textAlign: TextAlign.center,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: tt.labelSmall?.copyWith(
+                            color: c.onSurfaceSecondary,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (selected == null || !mounted) return;
+
+    String? customLabel;
+    if (selected == SafetyMarkingType.other) {
+      customLabel = await _promptCustomMarkingLabel();
+      if (customLabel == null) return; // cancelled the label prompt
+    }
+
+    await _placeSafetyMarking(grid, selected, customLabel: customLabel);
+  }
+
+  Future<String?> _promptCustomMarkingLabel() async {
+    final controller = TextEditingController();
+    final c = AppTheme.colors(context);
+    final tt = Theme.of(context).textTheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: Container(
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xFF1C2942) : Colors.white,
+            borderRadius: BorderRadius.circular(AppRadius.xl),
+            border: isDark
+                ? Border.all(color: Colors.white.withValues(alpha: 0.10))
+                : null,
+          ),
+          padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Label This Marking',
+                style: tt.headlineSmall?.copyWith(
+                  color: c.onSurface,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                textCapitalization: TextCapitalization.sentences,
+                decoration: InputDecoration(
+                  hintText: 'e.g. Staff Only Beyond This Point',
+                  prefixIcon: Icon(Icons.label_outline_rounded, color: c.iconMuted),
+                ),
+              ),
+              const SizedBox(height: 20),
+              GestureDetector(
+                onTap: () =>
+                    Navigator.pop(context, controller.text.trim()),
+                child: Container(
+                  height: 54,
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    gradient: heroGradient(),
+                    borderRadius: BorderRadius.circular(AppRadius.md),
+                    boxShadow: AppShadows.primaryGlow(c.primary),
+                  ),
+                  child: Center(
+                    child: Text(
+                      'Place Marker',
+                      style: tt.labelLarge?.copyWith(color: Colors.white),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              GestureDetector(
+                onTap: () => Navigator.pop(context),
+                child: Container(
+                  height: 50,
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(AppRadius.md),
+                    border: Border.all(color: c.border, width: 1.5),
+                  ),
+                  child: Center(
+                    child: Text(
+                      'Cancel',
+                      style: tt.labelLarge?.copyWith(
+                        color: c.onSurfaceSecondary,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _placeSafetyMarking(
+    GridPoint grid,
+    SafetyMarkingType type, {
+    String? customLabel,
+  }) async {
+    try {
+      final marking = await _buildingService.addSafetyMarking(
+        buildingId: widget.building.id,
+        floorId: widget.floor.id,
+        row: grid.row,
+        col: grid.col,
+        type: type,
+        customLabel: customLabel,
+      );
+      setState(() => _markings = [..._markings, marking]);
+      HapticFeedback.mediumImpact();
+      _snack(
+        '${marking.label} placed',
+        color: AppTheme.colors(context).success,
+      );
+    } catch (e) {
+      _snack(
+        'Error placing marking: $e',
+        color: AppTheme.colors(context).error,
+      );
+    }
+  }
+
+  Future<void> _repositionMarking(
+    SafetyMarkingModel marking,
+    Offset globalPosition,
+  ) async {
+    final grid = _globalPointToGrid(globalPosition);
+    setState(() {
+      _draggingMarkingId = null;
+      _dragPreviewLocalPosition = null;
+      _dragLastGlobalPosition = null;
+    });
+    if (grid == null) return;
+
+    try {
+      await _buildingService.updateSafetyMarking(
+        widget.building.id,
+        widget.floor.id,
+        marking.id,
+        {
+          'gridPoint': {'row': grid.row, 'col': grid.col},
+        },
+      );
+      setState(() {
+        _markings = _markings
+            .map((m) => m.id == marking.id ? m.copyWith(gridPoint: grid) : m)
+            .toList();
+      });
+    } catch (e) {
+      _snack(
+        'Error moving marking: $e',
+        color: AppTheme.colors(context).error,
+      );
+    }
+  }
+
+  Future<void> _removeMarking(SafetyMarkingModel marking) async {
+    try {
+      await _buildingService.deleteSafetyMarking(
+        widget.building.id,
+        widget.floor.id,
+        marking.id,
+      );
+      setState(
+        () => _markings = _markings.where((m) => m.id != marking.id).toList(),
+      );
+      HapticFeedback.mediumImpact();
+      _snack('Marking removed', color: AppTheme.colors(context).success);
+    } catch (e) {
+      _snack(
+        'Error removing marking: $e',
+        color: AppTheme.colors(context).error,
+      );
+    }
+  }
+
+  void _showMarkingOptions(SafetyMarkingModel marking) {
+    final c = AppTheme.colors(context);
+    final tt = Theme.of(context).textTheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final style = styleForMarking(marking.type);
+
+    HapticFeedback.selectionClick();
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF1C2942) : Colors.white,
+          borderRadius: BorderRadius.circular(AppRadius.xl),
+          border: isDark
+              ? Border.all(color: Colors.white.withValues(alpha: 0.10))
+              : null,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.20),
+              blurRadius: 24,
+              offset: const Offset(0, -4),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 40,
+                margin: const EdgeInsets.only(bottom: 4),
+                decoration: BoxDecoration(
+                  color: style.color.withValues(alpha: 0.14),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(style.icon, color: style.color, size: 22),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              marking.label,
+              style: tt.headlineSmall?.copyWith(
+                color: c.onSurface,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Safety marking · Drag to move',
+              style: tt.bodySmall?.copyWith(color: c.onSurfaceSecondary),
+            ),
+            const SizedBox(height: 22),
+            GestureDetector(
+              onTap: () {
+                Navigator.pop(context);
+                _removeMarking(marking);
+              },
+              child: Container(
+                height: 54,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: c.error.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                  border: Border.all(color: c.error.withValues(alpha: 0.35)),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.delete_outline_rounded,
+                      color: c.error,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 10),
+                    Text(
+                      'Remove Marking',
+                      style: tt.labelLarge?.copyWith(color: c.error),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            GestureDetector(
+              onTap: () => Navigator.pop(context),
+              child: Container(
+                height: 50,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                  border: Border.all(color: c.border, width: 1.5),
+                ),
+                child: Center(
+                  child: Text(
+                    'Close',
+                    style: tt.labelLarge?.copyWith(color: c.onSurfaceSecondary),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Future<void> _deleteRoom(RoomModel room) async {
     final c = AppTheme.colors(context);
@@ -1170,6 +1578,13 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
             color: c.onBackground,
             onPressed: _resetView,
           ),
+          // Map legend
+          _IconBtn(
+            icon: Icons.map_rounded,
+            tooltip: 'Map Legend',
+            color: c.onBackground,
+            onPressed: () => showSafetyMarkingLegend(context),
+          ),
           // Help
           _IconBtn(
             icon: Icons.info_outline_rounded,
@@ -1245,6 +1660,14 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
                                         if (_gridModel != null)
                                           ..._doors.map(
                                             (d) => _buildDoorMarker(d, c, tt),
+                                          ),
+                                        // Safety / facility markings (same
+                                        // layer as doors — informational,
+                                        // never blocks tapping a room pin)
+                                        if (_gridModel != null)
+                                          ..._markings.map(
+                                            (m) =>
+                                                _buildSafetyMarkingMarker(m, c, tt),
                                           ),
                                         // Room pin markers
                                         if (_gridModel != null)
@@ -1352,6 +1775,16 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
               (
                 Icons.block_rounded,
                 'Drag the Off-Limits icon onto a room to restrict it',
+              ),
+              (
+                Icons.add_location_alt_rounded,
+                'Drag the Safety icon onto the map, then pick what it marks '
+                '(exit, extinguisher, restroom, etc.) — drag a placed marker '
+                'to reposition it',
+              ),
+              (
+                Icons.map_rounded,
+                'Use the map icon in the app bar to see what every icon means',
               ),
               (Icons.fit_screen_rounded, 'Use ⊡ button to reset the view'),
             ].map(
@@ -1581,6 +2014,77 @@ class _RoomMappingScreenState extends State<RoomMappingScreen>
             color: Colors.white,
             size: 18,
           ),
+        ),
+      ),
+    );
+  }
+
+  // Safety marking marker — same drag-to-reposition, tap-for-options
+  // interaction as doors, styled per [SafetyMarkingType].
+
+  Widget _buildSafetyMarkingMarker(
+    SafetyMarkingModel marking,
+    AppColors c,
+    TextTheme tt,
+  ) {
+    final isDragging = _draggingMarkingId == marking.id;
+    final x = isDragging
+        ? _dragPreviewLocalPosition!.dx
+        : _getScreenX(marking.gridPoint.col);
+    final y = isDragging
+        ? _dragPreviewLocalPosition!.dy
+        : _getScreenY(marking.gridPoint.row);
+    final style = styleForMarking(marking.type);
+
+    return Positioned(
+      left: x - 18,
+      top: y - 18,
+      child: GestureDetector(
+        onTap: () => _showMarkingOptions(marking),
+        onPanStart: (_) => setState(() {
+          _draggingMarkingId = marking.id;
+          _dragPreviewLocalPosition = Offset(
+            _getScreenX(marking.gridPoint.col),
+            _getScreenY(marking.gridPoint.row),
+          );
+        }),
+        onPanUpdate: (details) {
+          final contentLocal = _globalPointToContentLocal(
+            details.globalPosition,
+          );
+          if (contentLocal == null) return;
+          setState(() {
+            _dragLastGlobalPosition = details.globalPosition;
+            _dragPreviewLocalPosition = contentLocal;
+          });
+        },
+        onPanEnd: (_) {
+          final global = _dragLastGlobalPosition;
+          if (global == null) {
+            setState(() {
+              _draggingMarkingId = null;
+              _dragPreviewLocalPosition = null;
+            });
+            return;
+          }
+          _repositionMarking(marking, global);
+        },
+        child: Container(
+          width: 36,
+          height: 36,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: style.color,
+            border: Border.all(color: Colors.white, width: 2.5),
+            boxShadow: [
+              BoxShadow(
+                color: style.color.withValues(alpha: 0.45),
+                blurRadius: 10,
+                offset: const Offset(0, 3),
+              ),
+            ],
+          ),
+          child: Icon(style.icon, color: Colors.white, size: 18),
         ),
       ),
     );
@@ -1915,6 +2419,15 @@ class _IconPalette extends StatelessWidget {
                 label: 'Off-Limits',
                 color: c.error,
                 data: _PaletteIcon.offLimits,
+                c: c,
+                tt: tt,
+              ),
+              const SizedBox(width: 10),
+              _PaletteButton(
+                icon: Icons.add_location_alt_rounded,
+                label: 'Safety',
+                color: c.primary,
+                data: _PaletteIcon.safetyMarking,
                 c: c,
                 tt: tt,
               ),

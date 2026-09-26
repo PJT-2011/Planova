@@ -46,7 +46,8 @@ class NotificationService {
     await docRef.set(notification.toJson());
   }
 
-  // Convenience helpers used by AccessControlService --------------------
+  // Convenience helpers used by AccessControlService (per-floor temporary
+  // access requests) --------------------------------------------------
 
   Future<void> notifyRequestSubmitted({
     required String adminId,
@@ -134,6 +135,87 @@ class NotificationService {
         type: AppNotificationType.accessExpired,
         title: 'Temporary access expired',
         body: 'Your temporary access to ${request.floorName} has ended.',
+        buildingId: request.buildingId,
+        floorId: request.floorId,
+        requestId: request.id,
+        createdAt: DateTime.now(),
+      ),
+    );
+  }
+
+  // Convenience helpers used by BuildingService (building-level QR
+  // access-approval requests) ------------------------------------------
+
+  Future<void> notifyBuildingAccessRequested({
+    required String adminId,
+    required String buildingId,
+    required String buildingName,
+    required String userName,
+  }) async {
+    await _create(
+      AppNotificationModel(
+        id: '',
+        userId: adminId,
+        type: AppNotificationType.buildingAccessRequested,
+        title: 'New building access request',
+        body:
+            '$userName scanned the QR code for $buildingName and is waiting for approval.',
+        buildingId: buildingId,
+        createdAt: DateTime.now(),
+      ),
+    );
+  }
+
+  Future<void> notifyBuildingAccessApproved({
+    required String userId,
+    required String buildingId,
+    required String buildingName,
+  }) async {
+    await _create(
+      AppNotificationModel(
+        id: '',
+        userId: userId,
+        type: AppNotificationType.buildingAccessApproved,
+        title: 'Access approved',
+        body: 'Your access to $buildingName has been approved.',
+        buildingId: buildingId,
+        createdAt: DateTime.now(),
+      ),
+    );
+  }
+
+  Future<void> notifyBuildingAccessRejected({
+    required String userId,
+    required String buildingId,
+    required String buildingName,
+  }) async {
+    await _create(
+      AppNotificationModel(
+        id: '',
+        userId: userId,
+        type: AppNotificationType.buildingAccessRejected,
+        title: 'Access request rejected',
+        body: 'Your request to access $buildingName was rejected by the admin.',
+        buildingId: buildingId,
+        createdAt: DateTime.now(),
+      ),
+    );
+  }
+
+  // Convenience helper used by AccessControlService.revokeAccess (per-floor
+  // temporary access) — unrelated to the QR access-token system, which was
+  // removed; this just tells a user their access was pulled.
+
+  Future<void> notifyAccessRevoked({
+    required AccessRequestModel request,
+  }) async {
+    await _create(
+      AppNotificationModel(
+        id: '',
+        userId: request.userId,
+        type: AppNotificationType.accessRevoked,
+        title: 'Access revoked',
+        body: 'Your access to ${request.floorName} has been revoked by the admin.',
         buildingId: request.buildingId,
         floorId: request.floorId,
         requestId: request.id,

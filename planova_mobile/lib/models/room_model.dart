@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:planova_mobile/models/grid_model.dart';
+import 'package:planova_mobile/models/room_marking.dart';
 
 class RoomModel {
   final String id;
@@ -12,6 +13,13 @@ class RoomModel {
   final DateTime createdAt;
   final bool isOffLimits;
   final String? offLimitsNote;
+
+  // Standardized indication flags (no food, no smoking, restricted,
+  // quiet area, accessibility, under renovation, authorized personnel
+  // only) — see RoomMarking. Purely informational: a marking never
+  // blocks navigation or access on its own. `underRenovation` pairs with
+  // isOffLimits, which is what actually blocks the room.
+  final List<RoomMarking> markings;
 
   // The room's off-limits area, as an admin-drawn rectangle in grid-cell
   // coordinates (inclusive on all sides). This is the actual source of
@@ -39,6 +47,7 @@ class RoomModel {
     required this.createdAt,
     this.isOffLimits = false,
     this.offLimitsNote,
+    this.markings = const [],
     this.offLimitsMinRow,
     this.offLimitsMaxRow,
     this.offLimitsMinCol,
@@ -53,6 +62,8 @@ class RoomModel {
       offLimitsMaxRow != null &&
       offLimitsMinCol != null &&
       offLimitsMaxCol != null;
+
+  bool get isUnderRenovation => markings.contains(RoomMarking.underRenovation);
 
   bool containsCell(GridPoint pt) {
     if (!hasOffLimitsArea) return false;
@@ -93,6 +104,7 @@ class RoomModel {
       'createdAt': Timestamp.fromDate(createdAt),
       'isOffLimits': isOffLimits,
       'offLimitsNote': offLimitsNote,
+      'markings': markings.map((m) => m.name).toList(),
       'offLimitsMinRow': offLimitsMinRow,
       'offLimitsMaxRow': offLimitsMaxRow,
       'offLimitsMinCol': offLimitsMinCol,
@@ -120,6 +132,7 @@ class RoomModel {
       createdAt: (json['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       isOffLimits: json['isOffLimits'] ?? false,
       offLimitsNote: json['offLimitsNote'],
+      markings: parseRoomMarkings(json['markings'] as List<dynamic>?),
       offLimitsMinRow: json['offLimitsMinRow'] as int?,
       offLimitsMaxRow: json['offLimitsMaxRow'] as int?,
       offLimitsMinCol: json['offLimitsMinCol'] as int?,
@@ -139,6 +152,7 @@ class RoomModel {
     DateTime? createdAt,
     bool? isOffLimits,
     String? offLimitsNote,
+    List<RoomMarking>? markings,
     int? offLimitsMinRow,
     int? offLimitsMaxRow,
     int? offLimitsMinCol,
@@ -155,6 +169,7 @@ class RoomModel {
       createdAt: createdAt ?? this.createdAt,
       isOffLimits: isOffLimits ?? this.isOffLimits,
       offLimitsNote: offLimitsNote ?? this.offLimitsNote,
+      markings: markings ?? this.markings,
       offLimitsMinRow: offLimitsMinRow ?? this.offLimitsMinRow,
       offLimitsMaxRow: offLimitsMaxRow ?? this.offLimitsMaxRow,
       offLimitsMinCol: offLimitsMinCol ?? this.offLimitsMinCol,

@@ -20,6 +20,8 @@ class AccessHistoryScreen extends StatelessWidget {
         return (Icons.cancel_outlined, c.error);
       case 'expired':
         return (Icons.timer_off_outlined, c.onSurfaceTertiary);
+      case 'revoked':
+        return (Icons.block_rounded, c.error);
       case 'permanent_access_updated':
         return (Icons.badge_outlined, c.warning);
       default:
@@ -40,6 +42,9 @@ class AccessHistoryScreen extends StatelessWidget {
             'request for ${e.floorName}';
       case 'expired':
         return 'Temporary access to ${e.floorName} expired for ${e.userName}';
+      case 'revoked':
+        return '${e.performedByName ?? 'Admin'} revoked ${e.userName}\'s '
+            'access to ${e.floorName}';
       case 'permanent_access_updated':
         return '${e.performedByName ?? 'Admin'} set ${e.userName}\'s access '
             'to: ${e.floorName}';

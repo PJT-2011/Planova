@@ -294,9 +294,12 @@ class _MyRequestsList extends StatelessWidget {
       case AccessRequestStatus.pending:
         return (Icons.hourglass_top_rounded, c.warning, 'Pending');
       case AccessRequestStatus.approved:
-        return r.isActiveTemporaryAccess
-            ? (Icons.check_circle_rounded, c.success, 'Active')
-            : (Icons.timer_off_outlined, c.onSurfaceTertiary, 'Expired');
+        if (!r.isActiveGrant) {
+          return (Icons.timer_off_outlined, c.onSurfaceTertiary, 'Expired');
+        }
+        return r.isPermanent
+            ? (Icons.all_inclusive_rounded, c.success, 'Permanent')
+            : (Icons.check_circle_rounded, c.success, 'Active');
       case AccessRequestStatus.rejected:
         return (Icons.cancel_rounded, c.error, 'Rejected');
       case AccessRequestStatus.expired:
@@ -309,6 +312,35 @@ class _MyRequestsList extends StatelessWidget {
     return StreamBuilder<List<AccessRequestModel>>(
       stream: stream,
       builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          debugPrint('My requests stream error: ${snapshot.error}');
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.error_outline_rounded, color: c.error, size: 40),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Couldn\'t load your requests',
+                    style: tt.titleSmall?.copyWith(
+                      color: c.onSurface,
+                      fontWeight: FontWeight.w700,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 8),
+                  SelectableText(
+                    snapshot.error.toString(),
+                    style: tt.bodySmall?.copyWith(color: c.onSurfaceSecondary),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
         if (!snapshot.hasData) {
           return Center(child: CircularProgressIndicator(color: c.primary));
         }
@@ -364,11 +396,13 @@ class _MyRequestsList extends StatelessWidget {
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                           ),
-                        if (r.isActiveTemporaryAccess)
+                        if (r.isActiveGrant)
                           Padding(
                             padding: const EdgeInsets.only(top: 4),
                             child: Text(
-                              'Access until ${r.expiresAt!.hour.toString().padLeft(2, '0')}:${r.expiresAt!.minute.toString().padLeft(2, '0')}',
+                              r.isPermanent
+                                  ? 'Permanent access'
+                                  : 'Access until ${r.expiresAt!.hour.toString().padLeft(2, '0')}:${r.expiresAt!.minute.toString().padLeft(2, '0')}',
                               style: tt.bodySmall?.copyWith(
                                 color: c.success,
                                 fontWeight: FontWeight.w600,

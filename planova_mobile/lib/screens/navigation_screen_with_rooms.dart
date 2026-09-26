@@ -3,6 +3,7 @@ import 'package:planova_mobile/models/building_model.dart';
 import 'package:planova_mobile/models/floor_model.dart';
 import 'package:planova_mobile/models/room_model.dart';
 import 'package:planova_mobile/models/door_model.dart';
+import 'package:planova_mobile/models/safety_marking_model.dart';
 import 'package:planova_mobile/models/floorplan_model.dart';
 import 'package:planova_mobile/models/grid_model.dart';
 import 'package:planova_mobile/services/building_service.dart';
@@ -41,6 +42,7 @@ class _NavigationScreenWithRoomsState
   final BuildingService _buildingService = BuildingService();
   List<RoomModel>? _rooms;
   List<DoorModel> _doors = [];
+  List<SafetyMarkingModel> _markings = [];
   bool _isLoading = true;
   String? _blockedMessage;
 
@@ -78,6 +80,17 @@ class _NavigationScreenWithRoomsState
       // navigation over a failure to load them.
     }
 
+    List<SafetyMarkingModel> markings = [];
+    try {
+      markings = await _buildingService.getSafetyMarkings(
+        widget.building.id,
+        widget.floor.id,
+      );
+    } catch (e) {
+      // Safety markings are purely informational too — never block
+      // navigation over a failure to load them.
+    }
+
     // Re-verify the target room against freshly-fetched data before ever
     // turning it into a destination.
     String? blockedMessage;
@@ -96,6 +109,7 @@ class _NavigationScreenWithRoomsState
     setState(() {
       _rooms = rooms;
       _doors = doors;
+      _markings = markings;
       _blockedMessage = blockedMessage;
       _isLoading = false;
     });
@@ -147,6 +161,7 @@ class _NavigationScreenWithRoomsState
       destination: destination,
       rooms: _rooms ?? const [],
       doors: _doors,
+      markings: _markings,
     );
   }
 }

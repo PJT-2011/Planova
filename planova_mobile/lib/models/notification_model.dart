@@ -6,6 +6,13 @@ enum AppNotificationType {
   requestRejected,
   accessExpiringSoon,
   accessExpired,
+  // Building-level QR access-approval notifications (distinct from the
+  // per-floor temporary access requests above): fired when a user scans a
+  // building's QR code and when an admin approves/rejects that scan.
+  buildingAccessRequested,
+  buildingAccessApproved,
+  buildingAccessRejected,
+  accessRevoked,
 }
 
 String _typeToString(AppNotificationType t) => t.name;

@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:planova_mobile/models/building_model.dart';
+import 'package:planova_mobile/models/access_request_model.dart';
 import 'package:planova_mobile/services/building_service.dart';
+import 'package:planova_mobile/services/access_control_service.dart';
 import 'package:planova_mobile/services/recent_building_service.dart';
+import 'package:planova_mobile/services/auth_service.dart';
 import 'package:planova_mobile/screens/floor_selection_screen.dart';
 import 'package:planova_mobile/theme/app_theme.dart';
 import 'package:planova_mobile/main.dart';
@@ -18,7 +21,9 @@ class QRScannerScreen extends StatefulWidget {
 
 class _QRScannerScreenState extends State<QRScannerScreen> {
   final BuildingService _buildingService = BuildingService();
+  final AccessControlService _accessService = AccessControlService();
   final RecentBuildingService _recentService = RecentBuildingService();
+  final AuthService _authService = AuthService();
   final MobileScannerController _controller = MobileScannerController();
 
   bool _isProcessing = false;
@@ -49,10 +54,45 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
         );
         return;
       }
-      await _buildingService.grantAccess(building.id, widget.userId);
+
+      // Scanning no longer grants access on the spot — it files (or
+      // re-reads) an approval request in the same accessRequests
+      // collection/admin queue as manual per-floor requests, so it shows
+      // up in the admin's Pending tab like anything else does. The admin
+      // has to sign off before this user can actually open the building.
+      final userData = await _authService.getUserData(widget.userId);
+      final request = await _accessService.submitBuildingAccessRequest(
+        buildingId: building.id,
+        buildingName: building.buildingName,
+        userId: widget.userId,
+        userName: userData?['name'] ?? 'User',
+      );
       await _recentService.saveRecentBuilding(widget.userId, building);
-      HapticFeedback.heavyImpact(); // success haptic
-      _showSuccessSheet(building);
+      HapticFeedback.heavyImpact();
+
+      switch (request.status) {
+        case AccessRequestStatus.approved:
+          if (request.isActiveGrant) {
+            _showSuccessSheet(building);
+          } else {
+            // Approved once, but the grant has since lapsed or was
+            // revoked (status stays 'approved' with an elapsed expiresAt
+            // until the next lazy-expiry sweep flips it) — treat the same
+            // as an explicit rejection for the scanning user.
+            _showRejectedSheet(building);
+          }
+          break;
+        case AccessRequestStatus.rejected:
+        case AccessRequestStatus.expired:
+          // 'expired' here means an admin explicitly revoked a grant
+          // (see AccessControlService.revokeAccess) rather than a
+          // duration simply running out before ever being checked again.
+          _showRejectedSheet(building);
+          break;
+        case AccessRequestStatus.pending:
+          _showPendingSheet(building);
+          break;
+      }
     } catch (e) {
       _showErrorSheet('Error', 'Failed to access building. Please try again.');
     } finally {
@@ -60,7 +100,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
     }
   }
 
-  // Success bottom sheet
+  // Success bottom sheet — already-approved user
 
   void _showSuccessSheet(BuildingModel building) {
     final c = AppTheme.colors(context);
@@ -236,6 +276,223 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
                 child: Center(
                   child: Text(
                     'Cancel',
+                    style: tt.labelLarge?.copyWith(color: c.onSurfaceSecondary),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Pending bottom sheet — request filed, waiting on the admin
+
+  void _showPendingSheet(BuildingModel building) {
+    final c = AppTheme.colors(context);
+    final tt = Theme.of(context).textTheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    showModalBottomSheet(
+      context: context,
+      isDismissible: false,
+      enableDrag: false,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => Container(
+        margin: EdgeInsets.only(
+          left: 16,
+          right: 16,
+          bottom: MediaQuery.of(context).padding.bottom + 16,
+        ),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF1C2942) : Colors.white,
+          borderRadius: BorderRadius.circular(AppRadius.xl),
+          border: isDark
+              ? Border.all(color: Colors.white.withValues(alpha: 0.10))
+              : null,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: isDark ? 0.5 : 0.15),
+              blurRadius: 32,
+              offset: const Offset(0, -8),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: c.warning.withValues(alpha: 0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.hourglass_top_rounded,
+                    color: c.warning,
+                    size: 24,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Text(
+                    'Waiting for Approval',
+                    style: tt.headlineSmall?.copyWith(
+                      color: c.onSurface,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Text(
+              building.buildingName,
+              style: tt.titleMedium?.copyWith(
+                color: c.onSurface,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Your request to access this building has been sent to the '
+              'admin. You\'ll be notified as soon as it\'s approved.',
+              style: tt.bodyMedium?.copyWith(
+                color: c.onSurfaceSecondary,
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 24),
+            GestureDetector(
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.pop(context);
+              },
+              child: Container(
+                height: 54,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  gradient: heroGradient(),
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                  boxShadow: AppShadows.primaryGlow(c.primary),
+                ),
+                child: Center(
+                  child: Text(
+                    'Got it',
+                    style: tt.labelLarge?.copyWith(color: Colors.white),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Rejected bottom sheet
+
+  void _showRejectedSheet(BuildingModel building) {
+    final c = AppTheme.colors(context);
+    final tt = Theme.of(context).textTheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => Container(
+        margin: EdgeInsets.only(
+          left: 16,
+          right: 16,
+          bottom: MediaQuery.of(context).padding.bottom + 16,
+        ),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF1C2942) : Colors.white,
+          borderRadius: BorderRadius.circular(AppRadius.xl),
+          border: isDark
+              ? Border.all(color: Colors.white.withValues(alpha: 0.10))
+              : null,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: isDark ? 0.5 : 0.15),
+              blurRadius: 32,
+              offset: const Offset(0, -8),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: c.error.withValues(alpha: 0.12),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.block_rounded,
+                    color: c.error,
+                    size: 24,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Text(
+                    'Access Rejected',
+                    style: tt.headlineSmall?.copyWith(
+                      color: c.onSurface,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Text(
+              building.buildingName,
+              style: tt.titleMedium?.copyWith(
+                color: c.onSurface,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'The admin denied your request to access this building. '
+              'Contact them directly if you think this is a mistake.',
+              style: tt.bodyMedium?.copyWith(
+                color: c.onSurfaceSecondary,
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 24),
+            GestureDetector(
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.pop(context);
+              },
+              child: Container(
+                height: 54,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                  border: Border.all(color: c.border, width: 1.5),
+                ),
+                child: Center(
+                  child: Text(
+                    'Close',
                     style: tt.labelLarge?.copyWith(color: c.onSurfaceSecondary),
                   ),
                 ),

@@ -60,8 +60,35 @@ class _GuestHomeScreenState extends State<GuestHomeScreen> {
         _loadRecentBuildings();
         return;
       }
-      await _buildingService.grantAccess(building.id, widget.userId);
+      // Reopening a recent building re-checks the current approval status
+      // rather than assuming access — a previously-pending request may
+      // since have been approved or rejected by the admin.
+      final status =
+          await _buildingService.getAccessStatus(building.id, widget.userId) ??
+          'approved';
       await _recentService.saveRecentBuilding(widget.userId, building);
+
+      if (status == 'pending') {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              'Still waiting for admin approval for ${building.buildingName}.',
+            ),
+          ),
+        );
+        return;
+      }
+      if (status == 'rejected') {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              'Your access to ${building.buildingName} was rejected by the admin.',
+            ),
+          ),
+        );
+        return;
+      }
+
       Navigator.push(
         context,
         PlanovaPageRoute(

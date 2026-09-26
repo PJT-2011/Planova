@@ -1,17 +1,22 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:planova_mobile/models/floorplan_model.dart';
 import 'package:planova_mobile/models/grid_model.dart';
 import 'package:planova_mobile/models/route_model.dart';
 import 'package:planova_mobile/models/room_model.dart';
 import 'package:planova_mobile/models/door_model.dart';
+import 'package:planova_mobile/models/safety_marking_model.dart';
 import 'package:planova_mobile/services/pathfinding_service.dart';
 import 'package:planova_mobile/services/indoor_positioning_service.dart';
 import 'package:planova_mobile/services/mock_storage_service.dart';
+import 'package:planova_mobile/services/user_preferences_service.dart';
 import 'package:planova_mobile/widgets/google_maps_3d_view.dart';
+import 'package:planova_mobile/widgets/safety_marking_legend.dart';
 import 'package:planova_mobile/theme/app_theme.dart';
 
 class NavigationScreen extends StatefulWidget {
@@ -27,6 +32,9 @@ class NavigationScreen extends StatefulWidget {
   // entry points are access-controlled — purely informational here,
   // navigation itself doesn't currently branch on door state.
   final List<DoorModel> doors;
+  // Admin-placed safety/facility markers (exits, extinguishers, etc.) —
+  // just as informational as doors above.
+  final List<SafetyMarkingModel> markings;
 
   const NavigationScreen({
     Key? key,
@@ -34,6 +42,7 @@ class NavigationScreen extends StatefulWidget {
     this.destination,
     this.rooms = const [],
     this.doors = const [],
+    this.markings = const [],
   }) : super(key: key);
 
   @override
@@ -44,6 +53,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
   final PathfindingService _pathfindingService = PathfindingService();
   final IndoorPositioningService _positioningService =
       IndoorPositioningService();
+  final UserPreferencesService _prefsService = UserPreferencesService();
 
   GridModel? _gridModel;
   GridPoint? _startPoint;
@@ -57,6 +67,12 @@ class _NavigationScreenState extends State<NavigationScreen> {
   bool _showRecenter = false;
   bool _topDownMode = false;
 
+  // Whether off-limits areas are blurred on this viewer's screen. Purely
+  // a display preference — see UserPreferencesService — and never
+  // consulted by the pathfinding/off-limits enforcement logic above, so
+  // toggling it can't change what's actually reachable.
+  bool _blurOffLimits = true;
+
   StreamSubscription? _positionSubscription;
   StreamSubscription? _headingSubscription;
   double _heading = 0.0;
@@ -69,10 +85,25 @@ class _NavigationScreenState extends State<NavigationScreen> {
   bool _boundsCalculated = false;
   VoidCallback? _recenterCallback;
 
+  String get _viewerId => FirebaseAuth.instance.currentUser?.uid ?? 'guest';
+
   @override
   void initState() {
     super.initState();
     _requestPermissions().then((_) => _loadFloorplanData());
+    _loadBlurPreference();
+  }
+
+  Future<void> _loadBlurPreference() async {
+    final enabled = await _prefsService.getOffLimitsBlurEnabled(_viewerId);
+    if (mounted) setState(() => _blurOffLimits = enabled);
+  }
+
+  Future<void> _toggleBlurPreference() async {
+    final next = !_blurOffLimits;
+    setState(() => _blurOffLimits = next);
+    await _prefsService.setOffLimitsBlurEnabled(_viewerId, next);
+    HapticFeedback.selectionClick();
   }
 
   @override
@@ -554,6 +585,23 @@ class _NavigationScreenState extends State<NavigationScreen> {
                 style: tt.titleLarge?.copyWith(color: c.onBackground),
               ),
               actions: [
+                IconButton(
+                  icon: Icon(
+                    _blurOffLimits
+                        ? Icons.blur_on_rounded
+                        : Icons.blur_off_rounded,
+                    color: c.onBackground,
+                  ),
+                  onPressed: _toggleBlurPreference,
+                  tooltip: _blurOffLimits
+                      ? 'Off-limits areas are blurred — tap to reveal'
+                      : 'Off-limits areas are visible — tap to blur',
+                ),
+                IconButton(
+                  icon: Icon(Icons.map_rounded, color: c.onBackground),
+                  onPressed: () => showSafetyMarkingLegend(context),
+                  tooltip: 'Map Legend',
+                ),
                 if (_startPoint != null || _endPoint != null)
                   IconButton(
                     icon: Icon(Icons.refresh_rounded, color: c.onBackground),
@@ -1144,6 +1192,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
       // Shaded boundary first so pins/doors draw on top of it, not under.
       ..._offLimitsBounds.map((bound) => _buildOffLimitsBoundary(bound)),
       ...widget.doors.map((door) => _buildDoorOverlay(door)),
+      ...widget.markings.map((marking) => _buildMarkingOverlay(marking)),
       ...widget.rooms
           .where((r) => r.isOffLimits)
           .map((room) => _buildOffLimitsOverlay(room)),
@@ -1151,7 +1200,11 @@ class _NavigationScreenState extends State<NavigationScreen> {
   }
 
   /// Shades the room's actual flood-filled extent so it's visibly obvious
-  /// which physical area is blocked — not just the single pin.
+  /// which physical area is blocked — not just the single pin. The tint
+  /// and border are always shown (that's what marks the area as
+  /// off-limits); [_blurOffLimits] only adds a blur over the floorplan
+  /// pixels underneath, which is a personal display choice and never
+  /// changes the boundary itself or what _isOffLimitsPoint enforces.
   Widget _buildOffLimitsBoundary(Rect cellBounds) {
     final left = _screenXAtCellEdge(cellBounds.left);
     final top = _screenYAtCellEdge(cellBounds.top);
@@ -1163,12 +1216,59 @@ class _NavigationScreenState extends State<NavigationScreen> {
       width: right - left,
       height: bottom - top,
       child: IgnorePointer(
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.red.withValues(alpha: 0.12),
-            border: Border.all(color: Colors.red.withValues(alpha: 0.6), width: 1.5),
-            borderRadius: BorderRadius.circular(4),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: Stack(
+            children: [
+              if (_blurOffLimits)
+                BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                  child: const SizedBox.expand(),
+                ),
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.red.withValues(
+                    alpha: _blurOffLimits ? 0.22 : 0.12,
+                  ),
+                  border: Border.all(
+                    color: Colors.red.withValues(alpha: 0.6),
+                    width: 1.5,
+                  ),
+                ),
+              ),
+            ],
           ),
+        ),
+      ),
+    );
+  }
+
+  /// Small static icon for an admin-placed safety/facility marking — same
+  /// treatment as [_buildDoorOverlay], just styled per [SafetyMarkingType].
+  Widget _buildMarkingOverlay(SafetyMarkingModel marking) {
+    final x = _getScreenX(marking.gridPoint.col);
+    final y = _getScreenY(marking.gridPoint.row);
+    final style = styleForMarking(marking.type);
+    return Positioned(
+      left: x - 15,
+      top: y - 15,
+      child: IgnorePointer(
+        child: Container(
+          width: 30,
+          height: 30,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: style.color,
+            border: Border.all(color: Colors.white, width: 2),
+            boxShadow: [
+              BoxShadow(
+                color: style.color.withValues(alpha: 0.5),
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Icon(style.icon, color: Colors.white, size: 15),
         ),
       ),
     );

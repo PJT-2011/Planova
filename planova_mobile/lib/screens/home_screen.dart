@@ -79,6 +79,35 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       await _recentService.saveRecentBuilding(_userId, building);
       if (!mounted) return;
+
+      // Re-check current approval status rather than assuming access — a
+      // previously-pending request may since have been approved or
+      // rejected by the admin. Buildings this user owns/manages have no
+      // access doc at all, so a null status is treated as approved.
+      final status =
+          await _buildingService.getAccessStatus(building.id, _userId) ??
+          'approved';
+      if (status == 'pending') {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              'Still waiting for admin approval for ${building.buildingName}.',
+            ),
+          ),
+        );
+        return;
+      }
+      if (status == 'rejected') {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              'Your access to ${building.buildingName} was rejected by the admin.',
+            ),
+          ),
+        );
+        return;
+      }
+
       Navigator.push(
         context,
         PlanovaPageRoute(
