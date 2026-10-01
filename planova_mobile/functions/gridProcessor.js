@@ -8,6 +8,18 @@
 const sharp = require('sharp');
 
 // ─── Otsu threshold ───────────────────────────────────────────────────────────
+// BUGFIX: a pure two-level image (only values 0 and 255 present anywhere
+// in the histogram -- which is exactly what a pre-binarized black/white
+// input looks like) makes every t from 0 to 254 tie for the maximum
+// variance, since there are no pixels at any intermediate value to
+// distinguish one t from the next. The old code kept only the FIRST t
+// that reached the max, which for this tie is always t=0 -- a threshold
+// of 0 means `v < thresh` is false for every pixel, so NOTHING is ever
+// classified as dark, and buildGrid() detects zero walls. The fix: track
+// the full plateau of tied thresholds and return its midpoint. For a
+// normal photo (no plateau, or a narrow one) this returns the same value
+// as before; for a pure 0/255 image it returns ~127, which is what
+// actually separates the two classes.
 function otsuThreshold(pixels) {
   const histogram = new Array(256).fill(0);
   for (const v of pixels) histogram[v]++;
@@ -15,7 +27,7 @@ function otsuThreshold(pixels) {
   let sum = 0;
   for (let i = 0; i < 256; i++) sum += i * histogram[i];
 
-  let sumB = 0, wB = 0, maxVar = 0, threshold = 0;
+  let sumB = 0, wB = 0, maxVar = -1, firstT = 0, lastT = 0;
   for (let t = 0; t < 256; t++) {
     wB += histogram[t];
     if (wB === 0) continue;
@@ -25,9 +37,13 @@ function otsuThreshold(pixels) {
     const mB = sumB / wB;
     const mF = (sum - sumB) / wF;
     const variance = wB * wF * (mB - mF) ** 2;
-    if (variance > maxVar) { maxVar = variance; threshold = t; }
+    if (variance > maxVar) {
+      maxVar = variance; firstT = t; lastT = t;
+    } else if (variance === maxVar) {
+      lastT = t;
+    }
   }
-  return threshold;
+  return Math.round((firstT + lastT) / 2);
 }
 
 // ─── Classify image type ──────────────────────────────────────────────────────

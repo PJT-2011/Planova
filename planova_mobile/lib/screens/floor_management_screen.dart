@@ -5,6 +5,7 @@ import 'package:planova_mobile/models/building_model.dart';
 import 'package:planova_mobile/models/floor_model.dart';
 import 'package:planova_mobile/services/building_service.dart';
 import 'package:planova_mobile/screens/room_mapping_screen.dart';
+import 'package:planova_mobile/screens/wall_review_screen.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:io';
@@ -574,6 +575,7 @@ class _FloorManagementScreenState extends State<FloorManagementScreen> {
           tt: tt,
           onTap: () => _openRoomMapping(floor),
           onMapRooms: () => _openRoomMapping(floor),
+          onReviewWalls: () => _openWallReview(floor),
           onDeleteTap: () => _confirmDeleteFloor(floor),
         ),
       ),
@@ -653,6 +655,16 @@ class _FloorManagementScreenState extends State<FloorManagementScreen> {
       ),
     ).then((_) => _loadFloors());
   }
+
+  void _openWallReview(FloorModel floor) {
+    Navigator.push(
+      context,
+      PlanovaPageRoute(
+        builder: (_) =>
+            WallReviewScreen(building: widget.building, floor: floor),
+      ),
+    ).then((_) => _loadFloors());
+  }
 }
 
 // Floor card widget
@@ -664,6 +676,7 @@ class _FloorCard extends StatelessWidget {
   final TextTheme tt;
   final VoidCallback onTap;
   final VoidCallback onMapRooms;
+  final VoidCallback onReviewWalls;
   final VoidCallback onDeleteTap;
 
   const _FloorCard({
@@ -673,6 +686,7 @@ class _FloorCard extends StatelessWidget {
     required this.tt,
     required this.onTap,
     required this.onMapRooms,
+    required this.onReviewWalls,
     required this.onDeleteTap,
   });
 
@@ -810,6 +824,35 @@ class _FloorCard extends StatelessWidget {
                       'Map Rooms',
                       style: tt.labelMedium?.copyWith(
                         color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+
+            // Review Walls button
+            GestureDetector(
+              onTap: onReviewWalls,
+              child: Container(
+                height: 44,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: c.primaryContainer,
+                  borderRadius: BorderRadius.circular(AppRadius.sm),
+                  border: Border.all(color: c.primary.withValues(alpha: 0.35)),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.edit_road_rounded, size: 16, color: c.primary),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Review Walls',
+                      style: tt.labelMedium?.copyWith(
+                        color: c.primary,
                         fontWeight: FontWeight.w600,
                       ),
                     ),

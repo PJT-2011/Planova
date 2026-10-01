@@ -94,7 +94,15 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
           break;
       }
     } catch (e) {
-      _showErrorSheet('Error', 'Failed to access building. Please try again.');
+      // Surfaced in full (and made selectable above) rather than a dead
+      // generic message — a Firestore error here (a missing composite
+      // index, most commonly) includes its own direct fix-it link, which
+      // is far more useful on-device than "please try again."
+      debugPrint('QR access request failed: $e');
+      _showErrorSheet(
+        'Couldn\'t Submit Request',
+        e.toString(),
+      );
     } finally {
       if (mounted) setState(() => _isProcessing = false);
     }
@@ -562,7 +570,7 @@ class _QRScannerScreenState extends State<QRScannerScreen> {
               ],
             ),
             const SizedBox(height: 16),
-            Text(
+            SelectableText(
               message,
               style: tt.bodyMedium?.copyWith(
                 color: c.onSurfaceSecondary,

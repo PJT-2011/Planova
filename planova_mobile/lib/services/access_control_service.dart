@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:planova_mobile/models/floor_access_model.dart';
 import 'package:planova_mobile/models/access_request_model.dart';
@@ -120,13 +121,35 @@ class AccessControlService {
   // Effective access (permanent + active temporary)
   // ---------------------------------------------------------------------
 
+  /// [canAccessFloor] deliberately does NOT go through [getUserAccess] —
+  /// that method's "no doc = unrestricted (all floors)" default exists to
+  /// grandfather in buildings/users that predate this feature entirely,
+  /// where "never explicitly restricted" genuinely meant "always could see
+  /// everything." Under the QR/accessRequests approval flow, "no doc"
+  /// instead means "this user has never been given an explicit legacy
+  /// grant" — which is now true of literally every new approval, since
+  /// nothing writes a userAccess doc anymore. Using that same default here
+  /// would treat every newly-approved user as having permanent access to
+  /// every floor regardless of what they were actually approved for. So
+  /// this reads the raw doc and only counts it if one actually exists.
+  Future<UserFloorAccessModel?> _rawUserAccess(
+    String buildingId,
+    String userId,
+  ) async {
+    final doc = await _userAccessCol(buildingId).doc(userId).get();
+    if (!doc.exists) return null;
+    return UserFloorAccessModel.fromJson(userId, doc.data()!);
+  }
+
   Future<bool> canAccessFloor({
     required String buildingId,
     required String userId,
     required int floorNumber,
   }) async {
-    final permanent = await getUserAccess(buildingId, userId);
-    if (permanent.hasPermanentAccess(floorNumber)) return true;
+    final permanent = await _rawUserAccess(buildingId, userId);
+    if (permanent != null && permanent.hasPermanentAccess(floorNumber)) {
+      return true;
+    }
 
     final activeTemp = await getActiveTemporaryAccess(
       buildingId: buildingId,
@@ -134,6 +157,100 @@ class AccessControlService {
       floorNumber: floorNumber,
     );
     return activeTemp != null;
+  }
+
+  /// Live view of exactly which floors this user can currently open in
+  /// this building — the reactive counterpart to [canAccessFloor], for
+  /// screens that need to update the instant an admin approves, revokes,
+  /// or changes a grant, without the user needing to leave and reopen the
+  /// screen. Emits `null` to mean "every floor" (a whole-building grant,
+  /// legacy or QR-originated), or the concrete set of floor numbers
+  /// otherwise. Recomputes whenever either the user's accessRequests or
+  /// their legacy userAccess doc changes.
+  Stream<Set<int>?> watchAccessibleFloorNumbers({
+    required String buildingId,
+    required String userId,
+  }) {
+    late final StreamController<Set<int>?> controller;
+    StreamSubscription? legacySub;
+    StreamSubscription? requestsSub;
+
+    UserFloorAccessModel? legacy;
+    List<AccessRequestModel> requests = const [];
+    bool legacyLoaded = false;
+    bool requestsLoaded = false;
+
+    void emit() {
+      // Wait for both sources' first value before emitting anything, so a
+      // listener never briefly sees a too-narrow (or too-wide) set just
+      // because one of the two streams hasn't reported in yet.
+      if (!legacyLoaded || !requestsLoaded || controller.isClosed) return;
+
+      if (legacy != null && legacy!.accessType == FloorAccessType.all) {
+        controller.add(null);
+        return;
+      }
+
+      final active = requests.where((r) => r.isActiveGrant);
+      if (active.any((r) => r.isWholeBuilding)) {
+        controller.add(null);
+        return;
+      }
+
+      final floors = <int>{};
+      if (legacy != null && legacy!.accessType == FloorAccessType.selected) {
+        floors.addAll(legacy!.floorNumbers);
+      }
+      for (final r in active) {
+        if (r.floorNumbers.isNotEmpty) {
+          floors.addAll(r.floorNumbers);
+        } else if (r.floorNumber >= 0) {
+          floors.add(r.floorNumber);
+        }
+      }
+      controller.add(floors);
+    }
+
+    controller = StreamController<Set<int>?>.broadcast(
+      onListen: () {
+        legacySub = _userAccessCol(buildingId).doc(userId).snapshots().listen(
+          (doc) {
+            legacy = doc.exists
+                ? UserFloorAccessModel.fromJson(userId, doc.data()!)
+                : null;
+            legacyLoaded = true;
+            emit();
+          },
+          onError: (_) {
+            legacyLoaded = true;
+            emit();
+          },
+        );
+
+        requestsSub = _requestsCol(buildingId)
+            .where('userId', isEqualTo: userId)
+            .snapshots()
+            .listen(
+              (snap) {
+                requests = snap.docs
+                    .map((d) => AccessRequestModel.fromJson(d.id, d.data()))
+                    .toList();
+                requestsLoaded = true;
+                emit();
+              },
+              onError: (_) {
+                requestsLoaded = true;
+                emit();
+              },
+            );
+      },
+      onCancel: () {
+        legacySub?.cancel();
+        requestsSub?.cancel();
+      },
+    );
+
+    return controller.stream;
   }
 
   /// Returns the approved+still-valid request granting access to this
@@ -251,20 +368,50 @@ class AccessControlService {
   /// building) reports back whatever request already exists rather than
   /// creating a second one — so a pending request doesn't get duplicated,
   /// and an approved/rejected one doesn't get reset back to pending.
+  /// Idempotent per user per building only while a prior request is still
+  /// "live" — pending, or approved and currently active. A rescan while
+  /// one of those exists reports it back rather than creating a second
+  /// one. But a *rejected* request (or one whose grant has since expired
+  /// or been revoked) does NOT block trying again: that old request stays
+  /// on record exactly as it was decided, and this creates a brand new
+  /// pending request alongside it, so scanning again after a rejection
+  /// actually gives the admin something fresh to review instead of
+  /// silently handing back the same rejection forever.
   Future<AccessRequestModel> submitBuildingAccessRequest({
     required String buildingId,
     required String buildingName,
     required String userId,
     required String userName,
   }) async {
+    // No pre-emptive sweepExpired() call here — that method queries every
+    // approved request in the building with no userId filter, which only
+    // the building's admin is allowed to read under the Firestore rules;
+    // a regular user calling it gets rejected outright with
+    // permission-denied, which — unhandled — aborted the entire scan
+    // before ever reaching the check below. It was never actually needed
+    // for correctness anyway: isActiveGrant (used right below) computes
+    // a grant's expiry live from its raw timestamp every time it's read,
+    // regardless of whether the stored 'status' field has been flipped
+    // to 'expired' yet by a sweep. That stored flip is a display/cleanup
+    // concern for the admin's screens (which already call sweepExpired
+    // themselves, and are allowed to), not something this check depends on.
     final existingSnap = await _requestsCol(buildingId)
         .where('userId', isEqualTo: userId)
         .where('isQrRequest', isEqualTo: true)
+        .orderBy('requestedAt', descending: true)
         .limit(1)
         .get();
     if (existingSnap.docs.isNotEmpty) {
-      final doc = existingSnap.docs.first;
-      return AccessRequestModel.fromJson(doc.id, doc.data());
+      final existing = AccessRequestModel.fromJson(
+        existingSnap.docs.first.id,
+        existingSnap.docs.first.data(),
+      );
+      if (existing.status == AccessRequestStatus.pending ||
+          existing.isActiveGrant) {
+        return existing;
+      }
+      // Rejected, or approved-but-no-longer-active: fall through and
+      // create a fresh request below. The old one is left untouched.
     }
 
     final buildingDoc = await _firestore
@@ -320,12 +467,15 @@ class AccessControlService {
     return request;
   }
 
-  /// Current status of this user's QR-originated request for this
-  /// building, or null if they've never scanned it. A revoked (status
-  /// 'expired') grant is reported back as-is rather than folded into
-  /// 'rejected' — callers that only care about "can they get in right
-  /// now" should check [AccessRequestModel.isActiveGrant] instead of the
-  /// raw status.
+  /// The most recent QR-originated request for this user in this
+  /// building, or null if they've never scanned it. "Most recent"
+  /// matters now that a rejected request no longer blocks a fresh one —
+  /// a user can have more than one QR request on file over time, and
+  /// callers that ask "what's their current status" want the latest, not
+  /// an arbitrary one. A revoked (status 'expired') grant is reported
+  /// back as-is rather than folded into 'rejected' — callers that only
+  /// care about "can they get in right now" should check
+  /// [AccessRequestModel.isActiveGrant] instead of the raw status.
   Future<AccessRequestModel?> getQrRequestStatus(
     String buildingId,
     String userId,
@@ -333,6 +483,7 @@ class AccessControlService {
     final snap = await _requestsCol(buildingId)
         .where('userId', isEqualTo: userId)
         .where('isQrRequest', isEqualTo: true)
+        .orderBy('requestedAt', descending: true)
         .limit(1)
         .get();
     if (snap.docs.isEmpty) return null;

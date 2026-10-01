@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:planova_mobile/models/building_model.dart';
 import 'package:planova_mobile/models/floor_model.dart';
@@ -31,9 +32,14 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
 
   List<FloorModel> _floors = [];
   Map<String, List<RoomModel>> _roomsByFloor = {};
-  // floorId -> whether the current user can access it right now
-  // (permanent access or an active temporary grant).
-  Map<String, bool> _accessByFloorId = {};
+  // The live set of floor numbers this user can currently open — null
+  // means "every floor" (whole-building access, legacy or QR-granted).
+  // Fed by a standing subscription rather than a one-time check, so an
+  // admin approving, revoking, or changing floors is reflected here
+  // immediately without the user leaving and reopening this screen.
+  Set<int>? _accessibleFloorNumbers;
+  bool _accessLoaded = false;
+  StreamSubscription<Set<int>?>? _accessSub;
   bool _isLoading = true;
   TabController? _tabController;
   int _currentFloorIndex = 0;
@@ -42,11 +48,36 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
   void initState() {
     super.initState();
     _loadBuildingData();
+
+    // The building's own admin/creator always has full access to every
+    // floor — they never scan their own QR or file a request for
+    // themselves, so there's no accessRequests/userAccess record to find
+    // for them at all. Without this, the admin would be locked out of
+    // their own building's floors under the fail-closed default below.
+    if (widget.userId == widget.building.createdBy) {
+      _accessibleFloorNumbers = null;
+      _accessLoaded = true;
+      return;
+    }
+
+    _accessSub = _accessService
+        .watchAccessibleFloorNumbers(
+          buildingId: widget.building.id,
+          userId: widget.userId,
+        )
+        .listen((floors) {
+      if (!mounted) return;
+      setState(() {
+        _accessibleFloorNumbers = floors;
+        _accessLoaded = true;
+      });
+    });
   }
 
   @override
   void dispose() {
     _tabController?.dispose();
+    _accessSub?.cancel();
     super.dispose();
   }
 
@@ -80,34 +111,23 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
       if (mounted) setState(() => _isLoading = false);
       return;
     }
-
-    // Access checks run after — and independently of — the core floor/room
-    // load, one floor at a time, so a rules/index problem on the new
-    // access-control collections can never blank out the floor list
-    // itself. Each check fails open (treated as accessible) on error,
-    // matching this feature's actual security model: floor restriction is
-    // a UI-level gate layered on top of otherwise-unrestricted floor/room
-    // documents, not something enforced by Firestore rules on the floor
-    // data itself.
-    for (final floor in _floors) {
-      try {
-        final canAccess = await _accessService.canAccessFloor(
-          buildingId: widget.building.id,
-          userId: widget.userId,
-          floorNumber: floor.floorNumber,
-        );
-        if (mounted) setState(() => _accessByFloorId[floor.id] = canAccess);
-      } catch (e) {
-        debugPrint('Floor access check failed for ${floor.id}: $e');
-        if (mounted) setState(() => _accessByFloorId[floor.id] = true);
-      }
-    }
   }
 
   FloorModel get _currentFloor => _floors[_currentFloorIndex];
   List<RoomModel> get _currentRooms => _roomsByFloor[_currentFloor.id] ?? [];
 
-  bool _hasAccess(FloorModel floor) => _accessByFloorId[floor.id] ?? true;
+  // Fails CLOSED, not open: until the live access stream has reported its
+  // first value, a floor is treated as NOT accessible. The previous
+  // one-shot version defaulted an unchecked floor to `true`, which opened
+  // a real window (worse, per-floor sequential checks) where every floor
+  // read as accessible before its specific check resolved. Getting this
+  // wrong is a security bug, not a cosmetic one, so the safe direction is
+  // the only acceptable default.
+  bool _hasAccess(FloorModel floor) {
+    if (!_accessLoaded) return false;
+    return _accessibleFloorNumbers == null ||
+        _accessibleFloorNumbers!.contains(floor.floorNumber);
+  }
 
   void _openNavigation(FloorModel floor, {RoomModel? targetRoom}) {
     if (!_hasAccess(floor)) {
@@ -145,7 +165,7 @@ class _FloorSelectionScreenState extends State<FloorSelectionScreen>
     final tt = Theme.of(context).textTheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    if (_isLoading) {
+    if (_isLoading || !_accessLoaded) {
       return Scaffold(
         backgroundColor: c.background,
         appBar: AppBar(

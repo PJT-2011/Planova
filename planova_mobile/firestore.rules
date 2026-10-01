@@ -1,0 +1,126 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+
+      match /floorplans/{floorplanId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+
+      // Notifications (in-app: request submitted/approved/rejected/expiring/expired)
+      match /notifications/{notificationId} {
+        allow read, update, delete: if request.auth != null && request.auth.uid == userId;
+        allow create: if request.auth != null;
+      }
+    }
+
+    // Building
+    match /buildings/{buildingId} {
+      allow read, write: if request.auth != null;
+
+      function isBuildingAdmin() {
+        return request.auth != null &&
+          get(/databases/$(database)/documents/buildings/$(buildingId)).data.createdBy ==
+          request.auth.uid;
+      }
+
+      // Floorplans
+      match /floors/{floorId} {
+        allow read, write: if request.auth != null;
+
+        match /rooms/{roomId} {
+          allow read, write: if request.auth != null;
+        }
+
+        match /doors/{doorId} {
+          allow read: if request.auth != null;
+          allow write: if isBuildingAdmin();
+        }
+
+        match /safetyMarkers/{markerId} {
+          allow read: if request.auth != null;
+          allow write: if isBuildingAdmin();
+        }
+      }
+
+      // Legacy QR access doc — superseded by accessRequests below (a
+      // QR scan now creates an AccessRequestModel with isQrRequest:
+      // true, reviewed in the same admin Pending tab as manual per-floor
+      // requests). Nothing new writes here anymore; this stays only so
+      // BuildingService's read-only backward-compat path can still see
+      // anyone approved before that change. Locked down the same way
+      // accessRequests is below: a user may only create their own doc as
+      // 'pending', only the admin can move it to approved/rejected.
+      match /access/{userId} {
+        allow read: if request.auth != null &&
+          (request.auth.uid == userId || isBuildingAdmin());
+
+        allow create: if request.auth != null &&
+          request.auth.uid == userId &&
+          request.resource.data.status == 'pending';
+
+        allow update: if isBuildingAdmin() && isValidLegacyAccessDecision();
+        allow delete: if isBuildingAdmin();
+
+        function isValidLegacyAccessDecision() {
+          let changedKeys = request.resource.data.diff(resource.data).affectedKeys();
+          return request.resource.data.status in ['approved', 'rejected'] &&
+            changedKeys.hasOnly(['status', 'accessGrantedAt', 'respondedBy', 'respondedByName']);
+        }
+      }
+
+      // Permanent per-user floor access — legacy, admin-managed. Nothing
+      // new writes here either (the current approval flow checks
+      // accessRequests directly via AccessControlService.canAccessFloor,
+      // it doesn't need a separate userAccess doc). Admin-only, full
+      // stop — the old isValidSelfSeedFromQr() self-create exception is
+      // removed, since letting a user write their own grant here would
+      // let them skip admin approval entirely.
+      match /userAccess/{userId} {
+        allow read: if request.auth != null &&
+          (request.auth.uid == userId || isBuildingAdmin());
+        allow create, update, delete: if isBuildingAdmin();
+      }
+
+      // Access requests — the single admin review queue for both manual
+      // per-floor requests (submitted with a reason from
+      // FloorAccessRequestScreen) and QR-originated building/floor
+      // requests (isQrRequest: true, submitted on scanning the entrance
+      // code). A user may only create their own request, and only as
+      // 'pending' — without that check here, a client could write
+      // status: 'approved' directly and skip admin review entirely.
+      match /accessRequests/{requestId} {
+        allow create: if request.auth != null &&
+          request.resource.data.userId == request.auth.uid &&
+          request.resource.data.status == 'pending';
+        allow read: if request.auth != null &&
+          (resource.data.userId == request.auth.uid || isBuildingAdmin());
+
+        // Approve/reject/revoke is admin-only. The requester can also
+        // flip their OWN request from 'approved' to 'expired' (and set
+        // expiringSoonNotified) — that's the lazy-expiry sweep running
+        // from whichever client happens to notice a grant has lapsed,
+        // never a self-approval.
+        allow update: if isBuildingAdmin() || isSelfExpireUpdate();
+        allow delete: if isBuildingAdmin();
+
+        function isSelfExpireUpdate() {
+          let changedKeys = request.resource.data.diff(resource.data).affectedKeys();
+          return request.auth != null &&
+            resource.data.userId == request.auth.uid &&
+            resource.data.status == 'approved' &&
+            changedKeys.hasOnly(['status', 'expiringSoonNotified']) &&
+            (!('status' in changedKeys) || request.resource.data.status == 'expired');
+        }
+      }
+
+      // Access-control audit log — append-only.
+      match /auditLog/{entryId} {
+        allow read: if isBuildingAdmin();
+        allow create: if request.auth != null;
+        allow update, delete: if false;
+      }
+    }
+  }
+}

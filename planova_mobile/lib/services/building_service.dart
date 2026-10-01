@@ -380,6 +380,7 @@ class BuildingService {
         .collection('accessRequests')
         .where('userId', isEqualTo: userId)
         .where('isQrRequest', isEqualTo: true)
+        .orderBy('requestedAt', descending: true)
         .limit(1)
         .get();
     if (qrSnap.docs.isNotEmpty) {
