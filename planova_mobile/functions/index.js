@@ -101,7 +101,7 @@ async function saveDebug(bucket, path, buffer) {
  * Builds the navigation grid for one floorplan image.
  *
  * Gemini only PROPOSES what to erase. The walls always come from the
- * original image (see wallMask.js). If Gemini fails, returns nothing, or
+ * original image. then if nag fail gemini return nothing, or
  * doesn't line up with the original, the grid is built from the original
  * image alone — so a Gemini outage or a bad redraw can no longer produce a
  * grid that disagrees with the picture users see.

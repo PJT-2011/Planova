@@ -1,4 +1,7 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:planova_mobile/screens/help_manual_screen.dart';
 import 'package:planova_mobile/main.dart';
 import 'package:planova_mobile/theme/app_theme.dart';
 
@@ -10,6 +13,28 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  /// Opens the in-app manual. Admins also get the Admin guide tab.
+  Future<void> _openHelp() async {
+    var isAdmin = false;
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null && !user.isAnonymous) {
+        final doc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get();
+        isAdmin = (doc.data()?['role'] ?? 'admin') == 'admin';
+      }
+    } catch (_) {
+      // Offline or no profile: show the regular user manual.
+    }
+    if (!mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => HelpManualScreen(isAdmin: isAdmin)),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final appState = PlanovaApp.of(context);
@@ -144,7 +169,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   c: c,
                   tt: tt,
-                  onTap: () {},
+                  onTap: _openHelp,
                 ),
                 Divider(height: 1, color: c.divider),
                 _SettingsTile(
